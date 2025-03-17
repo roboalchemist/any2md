@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+.venv_new
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Model and cache directories
+mlx_models/
+.cache/
+*.npz
+*.bin
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project-specific
+*.srt
+*.wav
+*.mp3
+*.mp4
+*.webm
+*.m4a
+benchmark-results/
+
+# Except test audio files
+!test_audio/*.mp3
+!test_audio/*.wav 
