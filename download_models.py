@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Download all available models for lightning-whisper-mlx
+Download mlx-audio models (Parakeet v3, Whisper variants)
 
-This script downloads all available models for the lightning-whisper-mlx library
-to the mlx_models directory.
+This script pre-downloads mlx-audio models from HuggingFace so they are cached
+locally for faster startup in subsequent runs.
 
 Usage:
     python download_models.py
+    python download_models.py --models parakeet-v3 parakeet-1.1b
 
 Author: Joseph Schlesinger
-Date: March 13, 2024
 """
 
 import os
 import time
 import logging
-from lightning_whisper_mlx import LightningWhisperMLX
+import argparse
+from mlx_audio.stt import load
+from yt2srt import resolve_model, MODEL_ALIASES, SUPPORTED_MODELS
 
 # Configure logging
 logging.basicConfig(
@@ -24,60 +26,59 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Define all available models
-MODELS = [
-    "tiny",
-    "small",
-    "base",
-    "medium",
-    "large",
-    "large-v2",
-    "large-v3",
-    "distil-small.en",
-    "distil-medium.en",
-    "distil-large-v2",
-    "distil-large-v3"
+# Default set of models to download
+DEFAULT_MODELS = [
+    "mlx-community/parakeet-tdt-0.6b-v3",
+    "mlx-community/parakeet-tdt-0.6b-v2",
+    "mlx-community/parakeet-tdt-1.1b",
+    "mlx-community/parakeet-ctc-0.6b",
+    "mlx-community/whisper-large-v3-turbo-asr-fp16",
 ]
 
-def download_model(model_name):
+
+def download_model(model_name: str):
     """
-    Download a model to the mlx_models directory.
-    
+    Download (warm-up cache for) a model from HuggingFace via mlx-audio.
+
     Args:
-        model_name (str): Name of the model to download
+        model_name (str): HuggingFace model ID or alias
     """
-    logger.info(f"Downloading model: {model_name}")
-    
-    # Check if model is already downloaded
-    model_dir = os.path.join("mlx_models", model_name)
-    if os.path.exists(model_dir) and os.path.isdir(model_dir):
-        logger.info(f"Model {model_name} is already downloaded at {model_dir}")
-        return
-    
-    # Initialize model (this will download the model)
+    resolved = resolve_model(model_name)
+    logger.info(f"Downloading model: {resolved}")
+
     start_time = time.time()
     try:
-        # Set a small batch size to minimize memory usage during download
-        batch_size = 1
-        whisper = LightningWhisperMLX(model=model_name, batch_size=batch_size, quant=None)
+        load(resolved)
         download_time = time.time() - start_time
-        logger.info(f"Model {model_name} downloaded in {download_time:.2f} seconds")
+        logger.info(f"Model {resolved} ready in {download_time:.2f} seconds")
     except Exception as e:
-        logger.error(f"Error downloading model {model_name}: {str(e)}")
+        logger.error(f"Error downloading model {resolved}: {str(e)}")
+
 
 def main():
     """Main function."""
-    logger.info(f"Downloading {len(MODELS)} models to mlx_models directory")
-    
-    # Create mlx_models directory if it doesn't exist
-    os.makedirs("mlx_models", exist_ok=True)
-    
-    # Download each model
-    for model in MODELS:
+    parser = argparse.ArgumentParser(
+        description="Download mlx-audio models (Parakeet v3 / Whisper)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=DEFAULT_MODELS,
+        help=(
+            "Models to download. Accepts HuggingFace IDs or aliases: "
+            + ", ".join(f"{k} -> {v}" for k, v in MODEL_ALIASES.items())
+        ),
+    )
+    args = parser.parse_args()
+
+    logger.info(f"Downloading {len(args.models)} models")
+    for model in args.models:
         download_model(model)
         logger.info("-" * 80)
-    
+
     logger.info("All models downloaded successfully")
 
+
 if __name__ == "__main__":
-    main() 
+    main()

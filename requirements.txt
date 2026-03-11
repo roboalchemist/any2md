@@ -1,16 +1,9 @@
 # Core dependencies
-lightning-whisper-mlx==0.0.10
-mlx==0.23.2  # Specific version required for quantization
+mlx-audio[stt]>=0.4.0
 yt-dlp>=2023.11.14
 numba>=0.61.0
 numpy>=2.0.0
-torch>=2.0.0
 tqdm>=4.64.1
 more-itertools>=10.1.0
-tiktoken==0.3.3
-scipy>=1.10.1
 
-# Optional: for MLX compatibility on Apple Silicon
-# No package needed for macOS; MLX is included with the lightning-whisper-mlx package
-
-# Install with: pip install -r requirements.txt 
+# Install with: pip install -r requirements.txt
