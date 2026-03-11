@@ -94,13 +94,41 @@ Text path for born-digital, VLM path for scanned. At least 5 new tests.
 
 **Success**: `python pdf2md.py scanned.pdf --ocr` produces markdown from image-only pages.
 
-## Phase 7 — Polish & Keep Going ⬜ NOT STARTED
+## Phase 7 — rst2md.py (reStructuredText to Markdown) ⬜ NOT STARTED
+
+Convert `.rst` files (Sphinx docs, Python package READMEs, documentation) to clean markdown.
+
+### 7A — Choose conversion library
+Options (in preference order):
+1. `pypandoc` — wraps pandoc, most accurate RST→MD (handles all RST features: directives, roles, footnotes)
+2. `docutils` — stdlib-adjacent, convert RST→HTML then use markitdown for HTML→MD
+3. `m2r2` — direct RST→MD converter (Sphinx-focused)
+
+Check which is installed/installable cleanly. Prefer `pypandoc` if pandoc is on PATH, else `docutils`+markitdown.
+
+### 7B — Build rst2md.py
+RST file → library conversion → markdown with frontmatter. Frontmatter from RST docinfo fields (`:Author:`, `:Date:`, `:Version:`) and file metadata. Support batch mode (directory of .rst files).
+
+```bash
+python rst2md.py README.rst
+python rst2md.py docs/  # batch: all .rst files in directory
+```
+
+Frontmatter fields: title, author, date, version, source, fetched_at.
+
+### 7C — Tests for rst2md.py
+At least 8 unit tests. Create minimal RST strings in-memory for testing (no real files needed). Mock the conversion library.
+
+**Success**: `python rst2md.py README.rst` produces markdown with frontmatter. All tests pass.
+
+## Phase 8 — Polish & Keep Going ⬜ NOT STARTED
 
 - Update download_models.py for all new models
 - Update requirements.txt with all new dependencies
 - README.md refresh with all tools
 - Performance benchmarks
 - Future tools: email2md, rss2md, csv2md, repo2md
+- rst2md already done in Phase 7 — consider adding org2md (Emacs Org-mode) as next
 
 ## Available Resources
 
@@ -136,8 +164,9 @@ Text path for born-digital, VLM path for scanned. At least 5 new tests.
 - **Phase 4**: img2md.py extracts text from a real image via Qwen3.5
 - **Phase 5**: html2md.py converts a local HTML file to markdown with frontmatter
 - **Phase 6**: pdf2md.py handles scanned PDFs with --ocr flag
-- **Phase 7**: All tools documented, requirements.txt complete, README refreshed
-- After all: keep going — add email2md, rss2md, etc.
+- **Phase 7**: rst2md.py converts a real .rst file to markdown with frontmatter
+- **Phase 8**: All tools documented, requirements.txt complete, README refreshed
+- After all: keep going — add email2md, rss2md, org2md, etc.
 
 ## Operating Rules
 
