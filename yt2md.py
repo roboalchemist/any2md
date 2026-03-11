@@ -28,13 +28,16 @@ import re
 import sys
 import time
 import json
-import argparse
 import tempfile
 import subprocess
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 import logging
+
+import typer
+from typing_extensions import Annotated
 
 # Configure logging
 logging.basicConfig(
@@ -651,92 +654,96 @@ def auto_detect_input(input_path: str) -> Tuple[str, bool]:
     return 'youtube', True
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Transcribe audio/video files or YouTube videos to markdown using mlx-audio (Parakeet v3)",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+class OutputFormat(str, Enum):
+    md = "md"
+    srt = "srt"
+    txt = "txt"
 
-    parser.add_argument(
-        "input",
-        help="Input source: YouTube URL, YouTube ID, or path to local audio/video file"
-    )
 
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=(
-            "Model to use for transcription. Accepts full HuggingFace IDs or short aliases: "
-            + ", ".join(f"{k} -> {v}" for k, v in MODEL_ALIASES.items())
-        )
-    )
+# Build model help text
+_model_help_lines = "\n".join(f"  {alias} → {full}" for alias, full in MODEL_ALIASES.items())
+_model_help = (
+    "Model for transcription. Accepts a full HuggingFace ID or a short alias.\n\n"
+    "Aliases:\n" + _model_help_lines
+)
 
-    parser.add_argument(
+app = typer.Typer(
+    help="Transcribe YouTube videos, audio, or video files to markdown, SRT, or plain text using mlx-audio (Parakeet v3).",
+    add_completion=False,
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
+
+
+@app.command()
+def main(
+    input: Annotated[str, typer.Argument(
+        help="YouTube URL, YouTube video ID, or path to a local audio/video file.",
+    )],
+    model: Annotated[str, typer.Option(
+        "--model", "-m",
+        help=_model_help,
+    )] = DEFAULT_MODEL,
+    output_dir: Annotated[Path, typer.Option(
         "--output-dir", "-o",
-        default=os.getcwd(),
-        help="Directory to save output files"
-    )
-
-    parser.add_argument(
-        "--keep-audio", "-k",
-        action="store_true",
-        help="Keep downloaded and converted audio files"
-    )
-
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose output"
-    )
-
-    parser.add_argument(
+        help="Directory to save output files.",
+    )] = Path.cwd(),
+    format: Annotated[OutputFormat, typer.Option(
         "--format", "-f",
-        choices=SUPPORTED_FORMATS,
-        default=DEFAULT_FORMAT,
-        help="Output format: md (markdown with timestamps, default), srt (subtitles), txt (plain text)"
-    )
+        help="Output format: [bold]md[/bold] (markdown + YAML frontmatter), [bold]srt[/bold] (subtitles), [bold]txt[/bold] (plain text).",
+    )] = OutputFormat.md,
+    chunk_duration: Annotated[float, typer.Option(
+        "--chunk-duration", "-c",
+        help="Chunk length in seconds for long audio. mlx-audio splits internally.",
+    )] = 30.0,
+    keep_audio: Annotated[bool, typer.Option(
+        "--keep-audio", "-k",
+        help="Keep downloaded/converted audio files instead of cleaning up.",
+    )] = False,
+    verbose: Annotated[bool, typer.Option(
+        "--verbose", "-v",
+        help="Enable verbose (DEBUG) logging.",
+    )] = False,
+):
+    """
+    Transcribe audio to markdown (default), SRT, or plain text.
 
-    parser.add_argument(
-        "--chunk-duration",
-        type=float,
-        default=30.0,
-        help="Duration in seconds of each audio chunk for long-form transcription (default: 30.0)"
-    )
-
-    args = parser.parse_args()
-
-    # Set logging level
-    if args.verbose:
+    Accepts a YouTube URL, a YouTube video ID (11 chars), or a path to a local
+    audio/video file. YouTube sources get full YAML frontmatter in markdown output.
+    """
+    if verbose:
         logger.setLevel(logging.DEBUG)
 
     # Auto-detect input type
-    input_type, is_youtube = auto_detect_input(args.input)
+    _input_type, is_youtube = auto_detect_input(input)
 
-    # Create temporary directory for audio files
+    output_dir_str = str(output_dir)
+
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
-            # Process input source based on detected type
             metadata = None
             if is_youtube:
-                audio_file, metadata = download_youtube_audio(args.input, temp_dir if not args.keep_audio else args.output_dir)
-                video_id = metadata.get('video_id') or extract_video_id(args.input)
+                audio_file, metadata = download_youtube_audio(
+                    input, temp_dir if not keep_audio else output_dir_str
+                )
+                video_id = metadata.get('video_id') or extract_video_id(input)
                 title = metadata.get('title', video_id)
             else:
-                audio_file, title = process_input_file(args.input, temp_dir if not args.keep_audio else args.output_dir)
+                audio_file, title = process_input_file(
+                    input, temp_dir if not keep_audio else output_dir_str
+                )
                 video_id = None
 
-            # Convert audio to 16kHz mono WAV format
             whisper_audio = convert_audio_for_whisper(audio_file, temp_dir)
 
-            # Transcribe
             output_file = transcribe(
                 whisper_audio,
-                args.model,
-                args.output_dir,
+                model,
+                output_dir_str,
                 title,
                 video_id,
-                args.chunk_duration,
-                args.format,
+                chunk_duration,
+                format.value,
                 metadata,
             )
 
@@ -744,8 +751,8 @@ def main():
 
         except Exception as e:
             logger.error(f"Error: {str(e)}")
-            sys.exit(1)
+            raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
-    main()
+    app()
