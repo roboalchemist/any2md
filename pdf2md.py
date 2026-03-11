@@ -15,9 +15,11 @@ Examples:
     python pdf2md.py scanned.pdf -f txt
 """
 
+import io
 import os
 import re
 import sys
+import tempfile
 import logging
 from datetime import datetime, timezone
 from enum import Enum
@@ -36,8 +38,50 @@ logger = logging.getLogger(__name__)
 
 from md_common import build_frontmatter
 
+# fitz (PyMuPDF) — loaded at module level so tests can patch pdf2md.fitz.
+# Falls back gracefully if not installed; ImportError is raised at call time.
+try:
+    import fitz
+    _FITZ_AVAILABLE = True
+except ImportError:
+    fitz = None  # type: ignore[assignment]
+    _FITZ_AVAILABLE = False
+
+# Pillow — loaded at module level so tests can patch pdf2md.Image.
+try:
+    from PIL import Image
+    _PIL_AVAILABLE = True
+except ImportError:
+    Image = None  # type: ignore[assignment]
+    _PIL_AVAILABLE = False
+
+# mlx-vlm — loaded at module level so tests can patch pdf2md.generate etc.
+# Falls back gracefully if mlx-vlm is not installed; ImportError is raised at call time.
+try:
+    from mlx_vlm import generate, load as _mlx_load
+    from mlx_vlm.prompt_utils import apply_chat_template
+    from mlx_vlm.utils import load_config as _mlx_load_config
+    _MLX_VLM_AVAILABLE = True
+except Exception:
+    generate = None  # type: ignore[assignment]
+    _mlx_load = None  # type: ignore[assignment]
+    apply_chat_template = None  # type: ignore[assignment]
+    _mlx_load_config = None  # type: ignore[assignment]
+    _MLX_VLM_AVAILABLE = False
+
 # Minimum chars on a page before flagging as image-heavy
 THIN_PAGE_THRESHOLD = 50
+
+# Default VLM model for OCR fallback
+VLM_MODEL_DEFAULT = "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
+
+VLM_EXTRACTION_PROMPT = """Extract all text from this document page as clean markdown.
+- Preserve tables as markdown tables
+- Convert equations to LaTeX ($...$ inline, $$...$$ block)
+- Use proper heading levels (#, ##, ###)
+- Preserve code blocks with language tags
+- Do NOT add text not present in the original
+Output ONLY the markdown."""
 
 
 def parse_page_range(page_range: str, total_pages: int) -> List[int]:
@@ -116,6 +160,169 @@ def extract_pdf_metadata(doc) -> Dict:
 
     # Remove None/empty values
     return {k: v for k, v in result.items() if v is not None and v != '' and v != []}
+
+
+def render_page_as_image(pdf_path: Path, page_index: int, dpi: int = 150):
+    """
+    Render a PDF page as a PIL Image using fitz (PyMuPDF).
+
+    Args:
+        pdf_path: Path to the PDF file
+        page_index: 0-based page index to render
+        dpi: Resolution in dots per inch (default 150)
+
+    Returns:
+        PIL.Image.Image of the rendered page
+
+    Raises:
+        ImportError: If fitz (PyMuPDF) or Pillow is not installed
+    """
+    if fitz is None:
+        raise ImportError("PyMuPDF (fitz) is required. Install it with: pip install pymupdf")
+    if Image is None:
+        raise ImportError("Pillow is required. Install it with: pip install Pillow")
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        page = doc[page_index]
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        pix = page.get_pixmap(matrix=mat)
+        img_bytes = pix.tobytes("png")
+        return Image.open(io.BytesIO(img_bytes))
+    finally:
+        doc.close()
+
+
+def load_vlm_for_pdf(model_name: str) -> Tuple:
+    """
+    Load VLM model and processor via mlx-vlm for PDF OCR.
+
+    Args:
+        model_name: HuggingFace model ID or local path
+
+    Returns:
+        Tuple of (model, processor, config)
+
+    Raises:
+        ImportError: If mlx-vlm is not installed
+    """
+    if _mlx_load is None or _mlx_load_config is None:
+        raise ImportError("mlx-vlm is required for --ocr. Install it with: pip install mlx-vlm")
+
+    logger.info("Loading VLM model for OCR: %s", model_name)
+    model, processor = _mlx_load(model_name)
+    config = _mlx_load_config(model_name)
+    return model, processor, config
+
+
+def extract_page_via_vlm(pdf_path: Path, page_index: int, model, processor, config) -> str:
+    """
+    Extract text from a PDF page using VLM inference on a rendered image.
+
+    Args:
+        pdf_path: Path to the PDF file
+        page_index: 0-based page index
+        model: Loaded mlx-vlm model
+        processor: Loaded mlx-vlm processor
+        config: Model config dict from load_config()
+
+    Returns:
+        Extracted markdown text from the VLM
+
+    Raises:
+        ImportError: If mlx-vlm is not installed
+    """
+    if apply_chat_template is None or generate is None:
+        raise ImportError("mlx-vlm is required for --ocr. Install it with: pip install mlx-vlm")
+
+    img = render_page_as_image(pdf_path, page_index)
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        img.save(f.name)
+        tmp_path = f.name
+
+    try:
+        prompt = apply_chat_template(processor, config, VLM_EXTRACTION_PROMPT, num_images=1)
+        result = generate(
+            model,
+            processor,
+            prompt,
+            image=tmp_path,
+            max_tokens=2048,
+            verbose=False,
+        )
+        return result if isinstance(result, str) else result.get('text', '')
+    finally:
+        os.unlink(tmp_path)
+
+
+def extract_pages_hybrid(
+    pdf_path: str,
+    page_indices: Optional[List[int]] = None,
+    ocr: bool = False,
+    force_ocr: bool = False,
+    vlm_model=None,
+    vlm_processor=None,
+    vlm_config=None,
+) -> List[Dict]:
+    """
+    Extract markdown from PDF pages, using VLM for thin/scanned pages when OCR is enabled.
+
+    For each page:
+    - If force_ocr=True: always use VLM
+    - If ocr=True and page text < THIN_PAGE_THRESHOLD chars: use VLM
+    - Otherwise: use pymupdf4llm text extraction
+
+    Args:
+        pdf_path: Path to the PDF file
+        page_indices: Optional list of 0-based page indices to extract
+        ocr: If True, use VLM for thin pages
+        force_ocr: If True, use VLM on ALL pages (implies ocr=True)
+        vlm_model: Loaded mlx-vlm model (required when ocr=True)
+        vlm_processor: Loaded mlx-vlm processor (required when ocr=True)
+        vlm_config: Model config dict (required when ocr=True)
+
+    Returns:
+        List of dicts with 'page' (1-based), 'text', 'is_thin', and 'ocr_used' keys
+    """
+    # First, get text extraction results from pymupdf4llm
+    base_results = extract_pages(pdf_path, page_indices)
+
+    if not ocr and not force_ocr:
+        # No OCR requested — return base results with ocr_used=False
+        for r in base_results:
+            r['ocr_used'] = False
+        return base_results
+
+    pdf_path_obj = Path(pdf_path)
+    results = []
+
+    for page_data in base_results:
+        page_index = page_data['page'] - 1  # convert 1-based back to 0-based
+        use_vlm = force_ocr or (ocr and page_data['is_thin'])
+
+        if use_vlm:
+            logger.info("Page %d: using VLM (thin=%s, force=%s)", page_data['page'], page_data['is_thin'], force_ocr)
+            try:
+                vlm_text = extract_page_via_vlm(
+                    pdf_path_obj, page_index, vlm_model, vlm_processor, vlm_config
+                )
+                results.append({
+                    'page': page_data['page'],
+                    'text': vlm_text.strip(),
+                    'is_thin': page_data['is_thin'],
+                    'ocr_used': True,
+                })
+            except Exception as exc:
+                logger.warning("Page %d: VLM failed (%s), falling back to text extraction", page_data['page'], exc)
+                page_data['ocr_used'] = False
+                results.append(page_data)
+        else:
+            logger.debug("Page %d: using text extraction", page_data['page'])
+            page_data['ocr_used'] = False
+            results.append(page_data)
+
+    return results
 
 
 def extract_pages(pdf_path: str, page_indices: Optional[List[int]] = None) -> List[Dict]:
@@ -251,6 +458,18 @@ def main(
         "--pages", "-p",
         help="Page range to extract, e.g. [bold]1-10[/bold], [bold]1,3,5[/bold], [bold]1-5,8,10-12[/bold]. Defaults to all pages.",
     )] = None,
+    ocr: Annotated[bool, typer.Option(
+        "--ocr",
+        help="Use VLM for scanned/image pages (auto-detected by thin text threshold).",
+    )] = False,
+    force_ocr: Annotated[bool, typer.Option(
+        "--force-ocr",
+        help="Force VLM on ALL pages, regardless of text content.",
+    )] = False,
+    vlm_model: Annotated[str, typer.Option(
+        "--vlm-model",
+        help="VLM model HuggingFace ID or alias for OCR fallback.",
+    )] = VLM_MODEL_DEFAULT,
     verbose: Annotated[bool, typer.Option(
         "--verbose", "-v",
         help="Enable verbose (DEBUG) logging.",
@@ -261,6 +480,8 @@ def main(
 
     Produces page-delineated output with YAML frontmatter from PDF metadata.
     Pages with little/no extractable text are flagged as potentially image-only.
+    Use [bold]--ocr[/bold] to automatically run VLM on thin/scanned pages.
+    Use [bold]--force-ocr[/bold] to run VLM on every page.
     """
     if verbose:
         logger.setLevel(logging.DEBUG)
@@ -275,7 +496,9 @@ def main(
         raise typer.Exit(code=1)
 
     # Open document for metadata
-    import fitz
+    if fitz is None:
+        logger.error("PyMuPDF (fitz) is required. Install it with: pip install pymupdf")
+        raise typer.Exit(code=1)
     doc = fitz.open(pdf_path)
     metadata = extract_pdf_metadata(doc)
     metadata['source'] = pdf_path
@@ -290,9 +513,37 @@ def main(
         page_indices = parse_page_range(pages, total_pages)
         logger.info(f"Extracting pages: {[i+1 for i in page_indices]}")
 
-    # Extract
-    extracted = extract_pages(pdf_path, page_indices)
+    # Load VLM model if OCR is requested
+    vlm_model_obj = None
+    vlm_processor = None
+    vlm_config = None
+    use_ocr = ocr or force_ocr
+    if use_ocr:
+        try:
+            vlm_model_obj, vlm_processor, vlm_config = load_vlm_for_pdf(vlm_model)
+        except ImportError as exc:
+            logger.error("Cannot load VLM for OCR: %s", exc)
+            raise typer.Exit(code=1)
+        except Exception as exc:
+            logger.error("Failed to load VLM model '%s': %s", vlm_model, exc)
+            raise typer.Exit(code=1)
+
+    # Extract (hybrid if OCR requested)
+    extracted = extract_pages_hybrid(
+        pdf_path,
+        page_indices=page_indices,
+        ocr=ocr,
+        force_ocr=force_ocr,
+        vlm_model=vlm_model_obj,
+        vlm_processor=vlm_processor,
+        vlm_config=vlm_config,
+    )
     logger.info(f"Extracted {len(extracted)} pages")
+
+    if use_ocr:
+        ocr_count = sum(1 for p in extracted if p.get('ocr_used'))
+        text_count = len(extracted) - ocr_count
+        logger.info("Pages via VLM: %d, via text extraction: %d", ocr_count, text_count)
 
     # Determine output filename
     output_dir_str = str(output_dir)
