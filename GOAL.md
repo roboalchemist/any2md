@@ -121,6 +121,67 @@ At least 8 unit tests. Create minimal RST strings in-memory for testing (no real
 
 **Success**: `python rst2md.py README.rst` produces markdown with frontmatter. All tests pass.
 
+## Phase 9 — Complete Live Testing (unit + integration) ⬜ NOT STARTED
+
+Current tests are unit-only with mocked dependencies. Nothing actually runs a model, fetches a URL, or reads a real file. This phase adds two layers:
+
+### 9A — Live unit tests (real fixtures, no model inference)
+
+Create `test/fixtures/` directory with minimal real files:
+- `test/fixtures/sample.docx` — tiny DOCX with title, author, one paragraph
+- `test/fixtures/sample.pptx` — 2-slide PPTX
+- `test/fixtures/sample.xlsx` — 1-sheet workbook with 3 rows
+- `test/fixtures/sample.epub` — minimal EPUB
+- `test/fixtures/sample.rst` — RST with docinfo fields and a code block
+- `test/fixtures/sample.html` — HTML with meta tags, title, body text
+- `test/fixtures/sample.jpg` — small test image (100x100 pixels, text visible)
+- `test/fixtures/sample.pdf` — born-digital PDF (1 page, text-layer)
+
+These tests run without any model inference — they test the actual file parsing, metadata extraction, and output formatting with real files instead of mocks. Skipped if the fixture file is missing.
+
+For each tool: at least 3 tests with real fixtures:
+1. File reads and parses without error
+2. Metadata fields are populated from actual file properties
+3. Output contains valid YAML frontmatter + non-empty markdown body
+
+### 9B — Integration tests (real model inference, skipped if model not downloaded)
+
+Create `test_integration.py` with `@pytest.mark.integration` marker. Each test:
+- Checks if the required model is cached locally (skip if not)
+- Runs the actual tool end-to-end on a real fixture
+- Verifies output is non-empty markdown with valid frontmatter
+- Verifies output is deterministic enough to be useful (>50 chars of content)
+
+Tools to cover:
+- `doc2md.py` — convert sample.docx (no model, always runs)
+- `rst2md.py` — convert sample.rst with real pypandoc (no model, always runs)
+- `web2md.py` — mock HTTP fetch but use real ReaderLM-v2 model (skip if model absent)
+- `html2md.py` — use sample.html with real ReaderLM-v2 model (skip if model absent)
+- `img2md.py` — use sample.jpg with real Qwen3.5 VLM (skip if model absent)
+- `pdf2md.py --ocr` — use sample.pdf scanned page with real VLM (skip if model absent)
+- `yt2md.py` — transcribe test_audio/test_voice.mp3 with real Parakeet (skip if model absent)
+
+Run integration tests with: `pytest test_integration.py -m integration -v`
+
+### 9C — CI marker separation
+
+Add `pytest.ini` or `pyproject.toml` `[tool.pytest.ini_options]` to define markers:
+```ini
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires model inference or network access",
+    "slow: takes more than 10 seconds",
+]
+```
+
+Fast unit tests: `pytest test_*.py -m "not integration"`
+All tests incl. integration: `pytest test_*.py test_integration.py`
+
+**Success**:
+- `pytest test_*.py -q` still passes (204+)
+- `pytest test/` passes with real fixtures (no mocks, no models)
+- `pytest test_integration.py -m integration -v` runs and either passes or skips (never errors) based on model availability
+
 ## Phase 8 — Polish & Keep Going ✅ DONE
 
 - Update download_models.py for all new models
@@ -149,7 +210,8 @@ At least 8 unit tests. Create minimal RST strings in-memory for testing (no real
 - unittest with mock objects for testing — FakeAlignedSentence pattern works well
 
 ### What fails
-- (none yet — this section accumulates as we learn)
+- All existing tests mock external deps — no live coverage of actual model inference or real file parsing
+- mlx-vlm 0.1.21 has torchvision ABI mismatch bug — VLM inference untested live
 
 ### Critical issues
 - mlx-lm and mlx-vlm APIs change frequently — always verify current API before implementing
@@ -166,6 +228,7 @@ At least 8 unit tests. Create minimal RST strings in-memory for testing (no real
 - **Phase 6**: pdf2md.py handles scanned PDFs with --ocr flag
 - **Phase 7**: rst2md.py converts a real .rst file to markdown with frontmatter
 - **Phase 8**: All tools documented, requirements.txt complete, README refreshed
+- **Phase 9**: Real fixture tests pass without mocks; integration tests pass or skip cleanly based on model availability; `pytest test_*.py -q` still green
 - After all: keep going — add email2md, rss2md, org2md, etc.
 
 ## Operating Rules
