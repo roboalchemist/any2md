@@ -379,21 +379,11 @@ class TestLoadVlmModel(unittest.TestCase):
         mock_load_config.assert_called_once_with(DEFAULT_MODEL)
 
     def test_import_error_when_mlx_vlm_not_installed(self):
-        """If mlx_vlm is not importable, load_vlm_model raises ImportError."""
-        import importlib
-        import builtins
-
-        original_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "mlx_vlm" or name.startswith("mlx_vlm."):
-                raise ImportError("mlx_vlm not installed")
-            return original_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            from img2md import load_vlm_model as _load
+        """If mlx_vlm symbols are None (not installed), load_vlm_model raises ImportError."""
+        import img2md
+        with patch.object(img2md, "load", None), patch.object(img2md, "load_config", None):
             with self.assertRaises(ImportError):
-                _load(DEFAULT_MODEL)
+                img2md.load_vlm_model(DEFAULT_MODEL)
 
 
 class TestProcessSingleImage(unittest.TestCase):
