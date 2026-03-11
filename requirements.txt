@@ -9,9 +9,17 @@ tqdm>=4.64.1
 more-itertools>=10.1.0
 markitdown[all]>=0.0.1
 
+# rst2md dependencies
+pypandoc>=1.12
+docutils>=0.20
+
 # web2md dependencies
 mlx-lm>=0.18.0
 httpx>=0.24.0
 trafilatura>=1.6.0
+
+# img2md dependencies
+mlx-vlm>=0.1.0
+Pillow>=9.0.0
 
 # Install with: pip install -r requirements.txt
