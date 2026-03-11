@@ -1,237 +1,128 @@
-# Lightning Whisper MLX Benchmark
+# 2md — Anything to Markdown
 
-A comprehensive benchmark and example for using the [lightning-whisper-mlx](https://github.com/mustafaaljadery/lightning-whisper-mlx) library to transcribe audio files on Apple Silicon.
+A toolkit for converting media, documents, and web content to markdown. All AI inference runs locally on Apple Silicon via MLX — no cloud APIs.
 
-## Overview
+## Tools
 
-The lightning-whisper-mlx library is an incredibly fast implementation of Whisper optimized for Apple Silicon. It provides:
-- Batched decoding for higher throughput
-- Distilled models for faster decoding
-- Quantized models for faster memory movement
+| Tool | Input | Method | Output |
+|------|-------|--------|--------|
+| `yt2md.py` | YouTube URLs, audio, video files | Parakeet STT (mlx-audio) | md / srt / txt |
+| `pdf2md.py` | PDF files | pymupdf4llm, optional VLM OCR | md / txt |
+| `web2md.py` | Web URLs | ReaderLM-v2 (mlx-lm) | md / txt |
+| `doc2md.py` | DOCX, PPTX, XLSX, EPUB, ODT, RTF | markitdown | md / txt |
+| `img2md.py` | JPEG, PNG, GIF, BMP, WebP, TIFF | Qwen2.5-VL (mlx-vlm) | md / txt |
+| `html2md.py` | Local HTML files | ReaderLM-v2 (mlx-lm) | md / txt |
+| `rst2md.py` | reStructuredText files | pypandoc / docutils | md / txt |
 
-This benchmark script demonstrates how to use the library and compares the performance of different models, including real-time factors to show how much faster the transcription is compared to the actual audio duration.
+## Quick Start
 
-## Prerequisites
-
-- macOS running on Apple Silicon (M1/M2/M3)
-- Python 3.8+
-- pip
-- ffmpeg/ffprobe (for audio duration calculation)
-
-## Installation
-
-1. Clone the lightning-whisper-mlx repository:
 ```bash
-git clone https://github.com/mustafaaljadery/lightning-whisper-mlx.git
-```
-
-2. Install the lightning-whisper-mlx package:
-```bash
-cd lightning-whisper-mlx
-pip install -e .
-cd ..
-```
-
-3. Install additional dependencies:
-```bash
-pip install tabulate
-```
-
-4. Install ffmpeg/ffprobe (if not already installed):
-```bash
-# Using Homebrew
 brew install ffmpeg
+pip install -r requirements.txt
+
+# Optional: pre-download MLX models before first use
+python download_models.py --stt       # Parakeet (yt2md)
+python download_models.py --vlm       # Qwen2.5-VL (img2md, pdf2md --ocr)
+python download_models.py --reader    # ReaderLM-v2 (web2md, html2md)
 ```
 
 ## Usage
 
-### Simple Transcription
-
-To run a simple transcription example:
+### yt2md — YouTube / audio / video
 
 ```bash
-python whisper_benchmark.py --simple --audio path/to/your/audio.mp3
+# YouTube URL or video ID
+python yt2md.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+python yt2md.py dQw4w9WgXcQ
+
+# Local audio/video file
+python yt2md.py lecture.mp4 -f srt -o ~/subtitles
+
+# Options
+python yt2md.py dQw4w9WgXcQ -m parakeet-v3 -f md -o ~/notes -k -v
+#   -m MODEL     Model alias or HuggingFace ID [default: mlx-community/parakeet-tdt-0.6b-v3]
+#   -f FORMAT    md | srt | txt  [default: md]
+#   -o DIR       Output directory
+#   -k           Keep downloaded/converted audio
+#   -v           Verbose logging
 ```
 
-This will transcribe the audio file using the "tiny" model and display the result along with the real-time factor.
+Model aliases: `parakeet-v3`, `parakeet-v2`, `parakeet-1.1b`, `parakeet-ctc`
 
-### Benchmark
-
-To benchmark multiple models:
+### pdf2md — PDF files
 
 ```bash
-python whisper_benchmark.py --models tiny small medium --audio path/to/your/audio.mp3
+python pdf2md.py document.pdf
+python pdf2md.py document.pdf -p 1-10,15 -o ~/notes
+
+# VLM OCR for scanned/image-only PDFs
+python pdf2md.py scanned.pdf --ocr           # VLM fallback on thin-text pages
+python pdf2md.py scanned.pdf --force-ocr     # VLM on every page
+
+# Options
+#   -p RANGE     Page range, e.g. "1-10,15,20-25"
+#   --ocr        VLM fallback for scanned pages
+#   --force-ocr  Force VLM on all pages
+#   --vlm-model  VLM model [default: mlx-community/Qwen2.5-VL-7B-Instruct-4bit]
 ```
 
-This will run a benchmark comparing the specified models and display the results in a table, including real-time factors.
+### web2md — Web URLs
 
-### Command-line Arguments
-
-- `--audio`: Path to the audio file (default: "test_audio/yt_video.mp3")
-- `--models`: Models to benchmark (choices: tiny, small, base, medium, large, large-v2, large-v3, distil-small.en, distil-medium.en, distil-large-v2, distil-large-v3)
-- `--batch-size`: Base batch size for transcription (default: 12)
-- `--simple`: Run a simple transcription example instead of a benchmark
-
-## Example Output
-
-```
-+----------+------------+-------+------------+--------------------+------------+------------------+---------------------------+----------------------------------------------------+
-| Model    | Batch Size | Quant | Init Time  | Transcription Time | Total Time | Audio Duration   | Real-time Factor          | Result                                             |
-+----------+------------+-------+------------+--------------------+------------+------------------+---------------------------+----------------------------------------------------+
-| tiny     | 12         | None  | 0.24s      | 4.35s              | 4.59s      | 555.22s          | 0.01x (1/127.73 real-time)| This is a test of the speech recognition system... |
-| small    | 12         | None  | 0.17s      | 20.28s             | 20.46s     | 555.22s          | 0.04x (1/27.37 real-time) | This is a test of the speech recognition system... |
-| medium   | 6          | None  | 27.01s     | 91.65s             | 118.66s    | 555.22s          | 0.17x (1/6.06 real-time)  | This is a test of the speech recognition system... |
-+----------+------------+-------+------------+--------------------+------------+------------------+---------------------------+----------------------------------------------------+
-
-Fastest model: tiny (batch_size: 12, quant: None)
-Transcription time: 4.35s
-Real-time factor: 0.01x (1/127.73 of real-time)
+```bash
+python web2md.py https://example.com/article
+python web2md.py https://example.com/article -o ~/notes -f md
 ```
 
-## Performance Notes
+### doc2md — Office documents
 
-- The "tiny" model is the fastest, processing audio at approximately 127x real-time speed
-- The "small" model is slower but still very fast at approximately 27x real-time speed
-- The "medium" model provides better accuracy while still processing at approximately 6x real-time speed
-- Larger models require more memory, so the batch size is automatically reduced
-- Model initialization time can be significant, especially for larger models
-- For production use, you would typically initialize the model once and reuse it for multiple transcriptions
+```bash
+python doc2md.py report.docx
+python doc2md.py slides.pptx -o ~/notes
+python doc2md.py spreadsheet.xlsx -f txt
+```
 
-## Troubleshooting
+Supported: DOCX, PPTX, XLSX, EPUB, ODT, RTF
 
-- If you encounter memory issues, try reducing the batch size
-- Quantized models (4-bit, 8-bit) may have compatibility issues with the current version of the library
-- For long audio files, the transcription is automatically split into segments
-- If ffprobe is not found, the real-time factor calculation will be skipped
+### img2md — Images
 
-## License
+```bash
+python img2md.py screenshot.png
+python img2md.py ~/screenshots/    # Process entire directory
 
-This benchmark script is provided under the same license as the lightning-whisper-mlx library.
+# Options
+#   -m MODEL     VLM alias or HuggingFace ID [default: qwen2.5-vl-7b]
+#   --prompt     Custom instruction for the VLM
+#   --max-tokens Max tokens per image [default: 2048]
+```
 
-# yt2srt - YouTube to SRT Transcription Tool
+Model aliases: `qwen2.5-vl-7b`, `qwen2.5-vl-3b`, `qwen2.5-vl-2b`, `qwen2.5-vl-72b`, `smoldocling`
 
-A command-line tool that downloads audio from YouTube videos and transcribes it to SRT subtitle files using the lightning-whisper-mlx library, which leverages Apple's MLX framework for efficient transcription on Apple Silicon devices.
+### html2md — Local HTML files
 
-## Features
+```bash
+python html2md.py page.html
+python html2md.py ~/exported-site/    # Process all .html/.htm files in directory
+```
 
-- Downloads audio from YouTube videos using yt-dlp
-- Converts audio to the optimal format for Whisper (16kHz, mono)
-- Transcribes audio using lightning-whisper-mlx (OpenAI's Whisper model optimized for Apple Silicon)
-- Generates SRT subtitle files with proper timestamps
-- Supports various Whisper model sizes (tiny, base, small, medium, large-v2, large-v3)
-- Can be used as a command-line tool or imported into other Python projects
+### rst2md — reStructuredText
+
+```bash
+python rst2md.py docs/readme.rst
+python rst2md.py docs/            # Process all .rst/.rest files in directory
+```
+
+## Architecture
+
+All tools share `md_common.py` for frontmatter generation, logging setup, and output utilities. Each tool produces YAML frontmatter with source metadata (title, author, dates, etc.) followed by the converted markdown body.
+
+AI tools use local MLX inference only:
+- **STT**: mlx-audio (Parakeet) — fast Apple Silicon speech recognition
+- **VLM**: mlx-vlm (Qwen2.5-VL) — vision-language model for images and OCR
+- **HTML/URL**: mlx-lm (ReaderLM-v2) — HTML-to-markdown conversion
 
 ## Requirements
 
-- Python 3.8+
-- Apple Silicon Mac (M1/M2/M3)
-- FFmpeg (for audio conversion)
-- Required Python packages:
-  - lightning-whisper-mlx
-  - yt-dlp
-
-## Installation
-
-1. Clone this repository or download the `yt2srt.py` file.
-
-2. Install the required dependencies:
-
-```bash
-pip install lightning-whisper-mlx yt-dlp
-```
-
-3. Ensure FFmpeg is installed on your system:
-
-```bash
-# macOS (using Homebrew)
-brew install ffmpeg
-
-# Ubuntu/Debian
-sudo apt-get install ffmpeg
-```
-
-4. Make the script executable:
-
-```bash
-chmod +x yt2srt.py
-```
-
-## Usage
-
-### Command Line
-
-Basic usage:
-
-```bash
-python yt2srt.py <youtube_url_or_id>
-```
-
-Example:
-
-```bash
-python yt2srt.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
-```
-
-With options:
-
-```bash
-python yt2srt.py --model medium --output-dir ~/subtitles --keep-audio dQw4w9WgXcQ
-```
-
-### Options
-
-- `youtube_url_or_id`: YouTube URL or video ID (required)
-- `--model`: Whisper model to use (default: large-v3)
-  - Choices: tiny, base, small, medium, large-v2, large-v3
-- `--output-dir`, `-o`: Directory to save output files (default: current directory)
-- `--keep-audio`, `-k`: Keep downloaded and converted audio files (default: False)
-- `--verbose`, `-v`: Enable verbose output (default: False)
-
-### As a Python Module
-
-You can also import and use the tool in your Python projects:
-
-```python
-from yt2srt import process_youtube_video
-
-# Process a YouTube video and get the path to the generated SRT file
-srt_file = process_youtube_video(
-    url_or_id="dQw4w9WgXcQ",
-    model_name="large-v3",
-    output_dir="~/subtitles",
-    keep_audio=False
-)
-
-print(f"Generated SRT file: {srt_file}")
-```
-
-## Output
-
-The tool generates:
-
-1. An SRT file named `[video_id] video_title.srt` in the specified output directory
-2. Temporary audio files (deleted by default unless `--keep-audio` is specified)
-
-## Models
-
-The tool supports the following Whisper models:
-
-- `tiny`: Smallest model, fastest but least accurate
-- `base`: Small model with reasonable accuracy
-- `small`: Good balance between speed and accuracy
-- `medium`: More accurate but slower
-- `large-v2`: Very accurate but slower
-- `large-v3`: Most accurate, latest model (default)
-
-Models are downloaded from HuggingFace the first time they are used and cached locally in the `mlx_models` directory.
-
-## License
-
-MIT
-
-## Acknowledgments
-
-- [OpenAI Whisper](https://github.com/openai/whisper)
-- [lightning-whisper-mlx](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-- [MLX](https://github.com/ml-explore/mlx) 
+- Python 3.10+
+- Apple Silicon Mac (M1/M2/M3/M4)
+- ffmpeg (`brew install ffmpeg`) — required for yt2md
+- pypandoc requires pandoc (`brew install pandoc`) — required for rst2md primary path
