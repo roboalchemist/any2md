@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODEL = "mlx-community/ReaderLM-v2"
+DEFAULT_MODEL = "mlx-community/jinaai-ReaderLM-v2"
 MAX_HTML_CHARS = 200_000   # Truncate HTML before passing to model
 MAX_OUTPUT_TOKENS = 8192
 

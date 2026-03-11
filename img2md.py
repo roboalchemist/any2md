@@ -188,7 +188,11 @@ def image_to_markdown_text(
         verbose=False,
     )
 
-    return output
+    # mlx-vlm >= 0.4.0 returns a GenerationResult dataclass instead of a plain str.
+    # Handle both for backward compatibility.
+    if isinstance(output, str):
+        return output
+    return output.text
 
 
 def image_to_markdown(content: str, metadata: dict) -> str:

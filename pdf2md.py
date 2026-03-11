@@ -251,7 +251,13 @@ def extract_page_via_vlm(pdf_path: Path, page_index: int, model, processor, conf
             max_tokens=2048,
             verbose=False,
         )
-        return result if isinstance(result, str) else result.get('text', '')
+        # mlx-vlm >= 0.4.0 returns a GenerationResult dataclass instead of a plain str/dict.
+        # Handle str, dict, and dataclass returns for backward compatibility.
+        if isinstance(result, str):
+            return result
+        if isinstance(result, dict):
+            return result.get('text', '')
+        return getattr(result, 'text', '')
     finally:
         os.unlink(tmp_path)
 
