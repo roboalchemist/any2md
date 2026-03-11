@@ -141,6 +141,17 @@ pip install -r requirements.txt
 # python download_models.py
 ```
 
+## Roadmap
+
+See [GOALS.md](GOALS.md) for the full expansion plan. Key additions planned:
+- `web2md.py` — URLs → markdown via ReaderLM-v2 (mlx-lm, local inference)
+- `doc2md.py` — DOCX/PPTX/XLSX/EPUB → markdown via markitdown
+- `img2md.py` — Images → markdown via Qwen3.5 VLM (mlx-vlm, local inference)
+- `html2md.py` — Local HTML files → markdown via ReaderLM-v2
+- Shared `md_common.py` module for frontmatter, logging, output
+
+All AI runs locally on Apple Silicon via MLX. No cloud APIs.
+
 ## Project History
 
 Originally built as `yt2srt` on `lightning-whisper-mlx`. Migrated to `yt2md` on `mlx-audio` with Parakeet, then rewritten from argparse to typer. Only Parakeet models are supported (Whisper models removed).
