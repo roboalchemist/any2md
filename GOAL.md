@@ -211,6 +211,47 @@ Models to use (smallest that actually work):
 
 **Success**: `pytest test/test_inference.py -m slow -v` passes with 0 failures, 0 skips on this machine (36GB Apple Silicon).
 
+## Phase 10 — Speaker Diarization for yt2md.py ⬜ NOT STARTED
+
+Add `--diarize` flag to yt2md.py that identifies who is speaking. Uses an MLX-native pipeline (~32MB total):
+
+### 10A — Diarization pipeline (CRITICAL — verify all models load)
+
+Install and verify the 3 MLX diarization models:
+- **Silero VAD v5** (`aufklarer/Silero-VAD-v5-MLX`, ~1.2MB) — voice activity detection
+- **Pyannote Segmentation 3.0** (`mlx-community/pyannote-segmentation-3.0-mlx`, ~5.7MB) — per-frame speaker probabilities (up to 3 simultaneous)
+- **WeSpeaker ResNet34-LM** (`aufklarer/WeSpeaker-ResNet34-LM-MLX`, ~25MB) — speaker embeddings
+
+Check the actual API for each model before writing code. Reference implementation: https://github.com/ivan-digital/qwen3-asr-swift (Swift, but same pipeline).
+
+### 10B — Build diarization module
+
+Create `diarize.py` with these functions:
+- `run_vad(audio_path) -> list[tuple[float, float]]` — speech segment boundaries via Silero
+- `run_segmentation(audio_path, speech_segments) -> ndarray` — per-frame speaker activity probabilities via pyannote
+- `extract_embeddings(audio_path, segments) -> ndarray` — speaker embeddings via WeSpeaker
+- `cluster_speakers(embeddings) -> list[int]` — agglomerative clustering via scipy/sklearn
+- `diarize(audio_path) -> list[dict]` — full pipeline: returns `[{speaker: "SPEAKER_0", start: 0.0, end: 5.2}, ...]`
+
+### 10C — Integrate into yt2md.py
+
+Add `--diarize` flag to the CLI:
+- When enabled: run diarization pipeline AFTER transcription
+- Align diarization segments to transcription segments (match by timestamp overlap)
+- Output format for markdown: `**SPEAKER_0**: text here...` per speaker turn
+- Output format for SRT: `[SPEAKER_0] text here...` in subtitle text
+- Frontmatter: add `speakers: N` field when diarization is used
+- Add diarization models to `download_models.py --diarize` flag
+
+### 10D — Tests
+- Unit tests mocking all 3 models (VAD, segmentation, embeddings)
+- Integration test with real audio (test_voice.mp3 — single speaker should produce SPEAKER_0 only)
+- Test alignment logic: given mock diarization + mock transcription segments, verify correct speaker assignment
+
+**Success**: `python yt2md.py test_audio/test_voice.mp3 --diarize` produces markdown with speaker labels. Multi-speaker audio correctly identifies different speakers.
+
+**New deps**: `scikit-learn>=1.0`, `scipy>=1.10` (for agglomerative clustering)
+
 ## Phase 8 — Polish & Keep Going ✅ DONE
 
 - Update download_models.py for all new models
