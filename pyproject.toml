@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "2md"
+version = "0.1.0"
+description = "Media to Markdown toolkit for Apple Silicon"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Joseph Schlesinger", email = "joe@schlesinger.io" },
+]
+dependencies = [
+    "typer>=0.9.0",
+    "typing-extensions",
+]
+
+[project.optional-dependencies]
+stt = ["mlx-audio[stt]>=0.4.0", "yt-dlp>=2023.11.14"]
+pdf = ["pymupdf4llm>=0.2.0"]
+img = ["mlx-vlm"]
+web = ["mlx-lm", "httpx"]
+doc = ["markitdown>=0.1.0"]
+rst = []
+all = ["2md[stt,pdf,img,web,doc]"]
+
+[project.scripts]
+2md = "tomd.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tomd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires real model inference or network access (use -m integration to run)",
+    "slow: takes more than 10 seconds",
+]
