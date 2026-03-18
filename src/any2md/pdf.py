@@ -36,7 +36,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from tomd.common import build_frontmatter
+from any2md.common import build_frontmatter
 
 # fitz (PyMuPDF) — loaded at module level so tests can patch pdf2md.fitz.
 # Falls back gracefully if not installed; ImportError is raised at call time.

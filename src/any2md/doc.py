@@ -26,7 +26,7 @@ from typing import Dict, Optional
 import typer
 from typing_extensions import Annotated
 
-from tomd.common import build_frontmatter, setup_logging, OutputFormat, write_output
+from any2md.common import build_frontmatter, setup_logging, OutputFormat, write_output
 
 # Configure logging
 logging.basicConfig(

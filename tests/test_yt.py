@@ -13,7 +13,7 @@ import os
 import sys
 import unittest
 
-from tomd.yt import (
+from any2md.yt import (
     extract_video_id,
     segments_to_srt,
     segments_to_markdown,

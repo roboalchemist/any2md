@@ -20,8 +20,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 
 
-import tomd.doc as doc2md
-from tomd.doc import (
+import any2md.doc as doc2md
+from any2md.doc import (
     detect_format,
     extract_doc_metadata,
     convert_document,
@@ -315,7 +315,7 @@ class TestDocToText(unittest.TestCase):
 class TestCLI(unittest.TestCase):
     def test_help_exits_cleanly(self):
         from typer.testing import CliRunner
-        from tomd.doc import app
+        from any2md.doc import app
         runner = CliRunner()
         result = runner.invoke(app, ["--help"])
         self.assertEqual(result.exit_code, 0)
@@ -323,7 +323,7 @@ class TestCLI(unittest.TestCase):
 
     def test_missing_file_exits_with_error(self):
         from typer.testing import CliRunner
-        from tomd.doc import app
+        from any2md.doc import app
         runner = CliRunner()
         result = runner.invoke(app, ["/nonexistent/path/file.docx"])
         self.assertNotEqual(result.exit_code, 0)
@@ -331,7 +331,7 @@ class TestCLI(unittest.TestCase):
     def test_unsupported_format_exits_with_error(self):
         import tempfile
         from typer.testing import CliRunner
-        from tomd.doc import app
+        from any2md.doc import app
         runner = CliRunner()
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"fake image")
@@ -346,7 +346,7 @@ class TestCLI(unittest.TestCase):
         """Integration smoke test: convert a real DOCX to markdown."""
         import tempfile
         from typer.testing import CliRunner
-        from tomd.doc import app
+        from any2md.doc import app
 
         docx_bytes = _make_docx_bytes(title="E2E Test", author="Tester")
         with tempfile.TemporaryDirectory() as tmpdir:

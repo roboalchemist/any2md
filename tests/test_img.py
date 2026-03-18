@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tomd.img import (
+from any2md.img import (
     DEFAULT_MODEL,
     SUPPORTED_FORMATS,
     find_images_in_directory,
@@ -22,7 +22,7 @@ from tomd.img import (
     image_to_text,
     resolve_model,
 )
-import tomd.img as img2md  # for patching
+import any2md.img as img2md  # for patching
 
 
 class TestResolveModel(unittest.TestCase):
@@ -133,11 +133,11 @@ class TestGetImageMetadata(unittest.TestCase):
         # Should look like 2026-03-10T12:00:00Z
         self.assertRegex(meta["fetched_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
-    @patch("tomd.img.logger")
+    @patch("any2md.img.logger")
     def test_missing_pillow_is_handled_gracefully(self, mock_logger):
         # Simulate Pillow raising an exception on open
-        import tomd.img as _img_mod
-        with patch("tomd.img.PilImage" if hasattr(_img_mod, "PilImage") else "PIL.Image.open") as mock_open:
+        import any2md.img as _img_mod
+        with patch("any2md.img.PilImage" if hasattr(_img_mod, "PilImage") else "PIL.Image.open") as mock_open:
             # Even if PIL raises, metadata should still be returned (without dimensions)
             mock_open.side_effect = Exception("PIL unavailable")
             # Just confirm the function doesn't raise
@@ -299,8 +299,8 @@ class TestImageToMarkdownText(unittest.TestCase):
     def tearDown(self):
         self._tmpdir.cleanup()
 
-    @patch("tomd.img.generate")
-    @patch("tomd.img.apply_chat_template")
+    @patch("any2md.img.generate")
+    @patch("any2md.img.apply_chat_template")
     def test_calls_generate_with_image_path(self, mock_template, mock_generate):
         mock_template.return_value = "formatted prompt"
         mock_generate.return_value = "## Extracted Text"
@@ -319,8 +319,8 @@ class TestImageToMarkdownText(unittest.TestCase):
         self.assertIn(str(self.tmp_image), str(call_kwargs))
         self.assertEqual(result, "## Extracted Text")
 
-    @patch("tomd.img.generate")
-    @patch("tomd.img.apply_chat_template")
+    @patch("any2md.img.generate")
+    @patch("any2md.img.apply_chat_template")
     def test_returns_string_output(self, mock_template, mock_generate):
         mock_template.return_value = "prompt"
         mock_generate.return_value = "output text"
@@ -335,8 +335,8 @@ class TestImageToMarkdownText(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertEqual(result, "output text")
 
-    @patch("tomd.img.generate")
-    @patch("tomd.img.apply_chat_template")
+    @patch("any2md.img.generate")
+    @patch("any2md.img.apply_chat_template")
     def test_applies_chat_template_with_num_images_1(self, mock_template, mock_generate):
         mock_template.return_value = "formatted"
         mock_generate.return_value = "result"
@@ -361,15 +361,15 @@ class TestImageToMarkdownText(unittest.TestCase):
 class TestLoadVlmModel(unittest.TestCase):
     """Tests for load_vlm_model()."""
 
-    @patch("tomd.img.load_config")
-    @patch("tomd.img.load")
+    @patch("any2md.img.load_config")
+    @patch("any2md.img.load")
     def test_loads_model_and_returns_triple(self, mock_load, mock_load_config):
         mock_model = MagicMock()
         mock_processor = MagicMock()
         mock_load.return_value = (mock_model, mock_processor)
         mock_load_config.return_value = {"model_type": "qwen2_5_vl"}
 
-        from tomd.img import load_vlm_model
+        from any2md.img import load_vlm_model
         model, processor, config = load_vlm_model(DEFAULT_MODEL)
 
         self.assertIs(model, mock_model)
@@ -380,7 +380,7 @@ class TestLoadVlmModel(unittest.TestCase):
 
     def test_import_error_when_mlx_vlm_not_installed(self):
         """If mlx_vlm symbols are None (not installed), load_vlm_model raises ImportError."""
-        import tomd.img as img2md
+        import any2md.img as img2md
         with patch.object(img2md, "load", None), patch.object(img2md, "load_config", None):
             with self.assertRaises(ImportError):
                 img2md.load_vlm_model(DEFAULT_MODEL)
@@ -398,13 +398,13 @@ class TestProcessSingleImage(unittest.TestCase):
     def tearDown(self):
         self._tmpdir.cleanup()
 
-    @patch("tomd.img.generate")
-    @patch("tomd.img.apply_chat_template")
+    @patch("any2md.img.generate")
+    @patch("any2md.img.apply_chat_template")
     def test_writes_md_output_file(self, mock_template, mock_generate):
         mock_template.return_value = "prompt"
         mock_generate.return_value = "# Heading\n\nContent."
 
-        from tomd.img import process_single_image
+        from any2md.img import process_single_image
         model = MagicMock()
         processor = MagicMock()
         config = {"model_type": "qwen2_5_vl"}
@@ -420,13 +420,13 @@ class TestProcessSingleImage(unittest.TestCase):
         self.assertIn("---", content)
         self.assertIn("# Heading", content)
 
-    @patch("tomd.img.generate")
-    @patch("tomd.img.apply_chat_template")
+    @patch("any2md.img.generate")
+    @patch("any2md.img.apply_chat_template")
     def test_writes_txt_output_file(self, mock_template, mock_generate):
         mock_template.return_value = "prompt"
         mock_generate.return_value = "Plain text output."
 
-        from tomd.img import process_single_image
+        from any2md.img import process_single_image
         model = MagicMock()
         processor = MagicMock()
         config = {"model_type": "qwen2_5_vl"}
@@ -441,13 +441,13 @@ class TestProcessSingleImage(unittest.TestCase):
         self.assertNotIn("---", content)
         self.assertIn("Plain text output.", content)
 
-    @patch("tomd.img.generate")
-    @patch("tomd.img.apply_chat_template")
+    @patch("any2md.img.generate")
+    @patch("any2md.img.apply_chat_template")
     def test_output_filename_matches_input_stem(self, mock_template, mock_generate):
         mock_template.return_value = "prompt"
         mock_generate.return_value = "result"
 
-        from tomd.img import process_single_image
+        from any2md.img import process_single_image
 
         named_image = self.tmp_dir / "my_diagram.png"
         named_image.write_bytes(b"fake")

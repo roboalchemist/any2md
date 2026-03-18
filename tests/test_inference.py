@@ -52,7 +52,7 @@ SORTFORMER_MODEL = "mlx-community/diar_sortformer_4spk-v1-fp32"
 @pytest.mark.slow
 def test_readerlm_html_to_markdown():
     """ReaderLM-v2 converts real HTML to markdown."""
-    from tomd.web import load_reader_model, html_to_markdown
+    from any2md.web import load_reader_model, html_to_markdown
 
     html = (FIXTURES / "sample.html").read_text()
     model, tokenizer = load_reader_model(READERLM_MODEL)
@@ -69,9 +69,9 @@ def test_readerlm_html_to_markdown():
 @pytest.mark.slow
 def test_readerlm_full_html2md_pipeline():
     """html2md.py full pipeline: real HTML file → markdown file with frontmatter."""
-    from tomd.html import process_html_file
-    from tomd.web import load_reader_model
-    from tomd.common import OutputFormat  # OutputFormat.md is the enum value
+    from any2md.html import process_html_file
+    from any2md.web import load_reader_model
+    from any2md.common import OutputFormat  # OutputFormat.md is the enum value
 
     path = FIXTURES / "sample.html"
     model, tokenizer = load_reader_model(READERLM_MODEL)
@@ -92,7 +92,7 @@ def test_readerlm_web_fetch_and_convert():
     that doesn't have macOS root certs in its ssl module's default path.
     """
     import urllib.request
-    from tomd.web import load_reader_model, html_to_markdown
+    from any2md.web import load_reader_model, html_to_markdown
 
     url = "https://example.com"
     # Fetch via stdlib urllib (always has access to system certs on macOS)
@@ -128,7 +128,7 @@ def test_vlm_image_ocr():
     model name. In that case, update QWEN_VL_MODEL to 7B-Instruct-4bit.
     sample.jpg has "Hello World" drawn on it — the VLM should recognise it.
     """
-    from tomd.img import load_vlm_model, image_to_markdown_text, get_image_metadata
+    from any2md.img import load_vlm_model, image_to_markdown_text, get_image_metadata
 
     path = FIXTURES / "sample.jpg"
 
@@ -158,7 +158,7 @@ def test_vlm_pdf_scanned_page_ocr():
     extract_page_via_vlm() renders page 0 as a PNG then runs VLM inference.
     sample.pdf contains "Test PDF Document".
     """
-    from tomd.pdf import render_page_as_image, extract_page_via_vlm, load_vlm_for_pdf
+    from any2md.pdf import render_page_as_image, extract_page_via_vlm, load_vlm_for_pdf
 
     path = FIXTURES / "sample.pdf"
 
@@ -194,7 +194,7 @@ def test_parakeet_transcription():
     """
     assert TEST_AUDIO.exists(), f"Test audio not found: {TEST_AUDIO}"
 
-    from tomd.yt import transcribe, convert_audio_for_whisper, resolve_model
+    from any2md.yt import transcribe, convert_audio_for_whisper, resolve_model
 
     model_id = resolve_model("parakeet-v3")  # mlx-community/parakeet-tdt-0.6b-v3
 
@@ -222,7 +222,7 @@ def test_diarize_single_speaker_audio():
     """Sortformer on single-speaker audio returns 1 speaker."""
     assert TEST_AUDIO.exists(), f"Test audio not found: {TEST_AUDIO}"
 
-    from tomd.yt import load_diarization_model, diarize, convert_audio_for_whisper
+    from any2md.yt import load_diarization_model, diarize, convert_audio_for_whisper
 
     model = load_diarization_model(SORTFORMER_MODEL)
 
@@ -242,7 +242,7 @@ def test_diarize_multi_speaker_audio():
     if not TWO_SPEAKERS_AUDIO.exists():
         pytest.skip(f"Two-speaker fixture not found: {TWO_SPEAKERS_AUDIO}")
 
-    from tomd.yt import load_diarization_model, diarize
+    from any2md.yt import load_diarization_model, diarize
 
     model = load_diarization_model(SORTFORMER_MODEL)
     output = diarize(str(TWO_SPEAKERS_AUDIO), model)
@@ -257,7 +257,7 @@ def test_diarize_end_to_end_single():
     """Full yt2md pipeline with --diarize on single-speaker audio."""
     assert TEST_AUDIO.exists()
 
-    from tomd.yt import transcribe, convert_audio_for_whisper
+    from any2md.yt import transcribe, convert_audio_for_whisper
 
     with tempfile.TemporaryDirectory() as tmpdir:
         wav_path = convert_audio_for_whisper(str(TEST_AUDIO), tmpdir)
@@ -279,7 +279,7 @@ def test_diarize_end_to_end_multi():
     if not TWO_SPEAKERS_AUDIO.exists():
         pytest.skip(f"Two-speaker fixture not found: {TWO_SPEAKERS_AUDIO}")
 
-    from tomd.yt import transcribe
+    from any2md.yt import transcribe
 
     with tempfile.TemporaryDirectory() as tmpdir:
         metadata = {"title": "Two Speakers"}
@@ -300,7 +300,7 @@ def test_diarize_real_youtube_interview():
     if not YT_INTERVIEW_AUDIO.exists():
         pytest.skip(f"YouTube interview fixture not found: {YT_INTERVIEW_AUDIO}")
 
-    from tomd.yt import load_diarization_model, diarize
+    from any2md.yt import load_diarization_model, diarize
 
     model = load_diarization_model(SORTFORMER_MODEL)
     output = diarize(str(YT_INTERVIEW_AUDIO), model)
@@ -315,7 +315,7 @@ def test_diarize_end_to_end_youtube():
     if not YT_INTERVIEW_AUDIO.exists():
         pytest.skip(f"YouTube interview fixture not found: {YT_INTERVIEW_AUDIO}")
 
-    from tomd.yt import transcribe
+    from any2md.yt import transcribe
 
     with tempfile.TemporaryDirectory() as tmpdir:
         metadata = {"title": "YouTube Interview"}

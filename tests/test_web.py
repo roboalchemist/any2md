@@ -18,12 +18,12 @@ class TestFetchHtml(unittest.TestCase):
     """Tests for fetch_html() — URL fetching with fallback to urllib."""
 
     def _html_and_meta(self, url="https://example.com"):
-        from tomd.web import fetch_html
+        from any2md.web import fetch_html
         return fetch_html
 
     def test_fetch_with_httpx(self):
         """fetch_html uses httpx when available."""
-        from tomd.web import fetch_html
+        from any2md.web import fetch_html
 
         mock_response = MagicMock()
         mock_response.text = "<html><title>Test</title></html>"
@@ -47,7 +47,7 @@ class TestFetchHtml(unittest.TestCase):
     def test_fetch_fallback_to_urllib(self):
         """fetch_html falls back to urllib when httpx is not installed."""
         import io
-        from tomd.web import fetch_html
+        from any2md.web import fetch_html
 
         html_bytes = b"<html><title>Fallback</title></html>"
 
@@ -65,7 +65,7 @@ class TestFetchHtml(unittest.TestCase):
 
     def test_fetch_returns_fetched_at_timestamp(self):
         """fetch_html always includes a fetched_at timestamp in ISO format."""
-        from tomd.web import fetch_html
+        from any2md.web import fetch_html
 
         mock_response = MagicMock()
         mock_response.text = "<html></html>"
@@ -91,7 +91,7 @@ class TestExtractMetadata(unittest.TestCase):
 
     def test_extracts_title_from_title_tag(self):
         """extract_metadata parses <title> when trafilatura is unavailable."""
-        from tomd.web import extract_metadata
+        from any2md.web import extract_metadata
 
         html = "<html><head><title>My Article</title></head><body></body></html>"
         with patch.dict("sys.modules", {"trafilatura": None}):
@@ -101,7 +101,7 @@ class TestExtractMetadata(unittest.TestCase):
 
     def test_extracts_meta_description(self):
         """extract_metadata parses <meta name='description'> tag."""
-        from tomd.web import extract_metadata
+        from any2md.web import extract_metadata
 
         html = (
             '<html><head>'
@@ -115,7 +115,7 @@ class TestExtractMetadata(unittest.TestCase):
 
     def test_derives_sitename_from_url(self):
         """extract_metadata derives sitename from URL domain."""
-        from tomd.web import extract_metadata
+        from any2md.web import extract_metadata
 
         html = "<html><head></head><body></body></html>"
         with patch.dict("sys.modules", {"trafilatura": None}):
@@ -125,7 +125,7 @@ class TestExtractMetadata(unittest.TestCase):
 
     def test_url_always_present(self):
         """extract_metadata always includes the source URL."""
-        from tomd.web import extract_metadata
+        from any2md.web import extract_metadata
 
         html = "<html></html>"
         with patch.dict("sys.modules", {"trafilatura": None}):
@@ -135,7 +135,7 @@ class TestExtractMetadata(unittest.TestCase):
 
     def test_fetched_at_always_present(self):
         """extract_metadata always includes fetched_at timestamp."""
-        from tomd.web import extract_metadata
+        from any2md.web import extract_metadata
 
         html = "<html></html>"
         with patch.dict("sys.modules", {"trafilatura": None}):
@@ -146,7 +146,7 @@ class TestExtractMetadata(unittest.TestCase):
 
     def test_uses_trafilatura_when_available(self):
         """extract_metadata uses trafilatura when installed."""
-        from tomd.web import extract_metadata
+        from any2md.web import extract_metadata
 
         mock_doc = MagicMock()
         mock_doc.as_dict = MagicMock(return_value={
@@ -169,7 +169,7 @@ class TestExtractMetadata(unittest.TestCase):
 
     def test_fallback_when_no_metadata_in_html(self):
         """extract_metadata returns url and fetched_at even for empty HTML."""
-        from tomd.web import extract_metadata
+        from any2md.web import extract_metadata
 
         html = "<html></html>"
         with patch.dict("sys.modules", {"trafilatura": None}):
@@ -184,7 +184,7 @@ class TestHtmlToMarkdown(unittest.TestCase):
 
     def test_converts_html_with_mocked_model(self):
         """html_to_markdown calls generate and returns stripped output."""
-        from tomd.web import html_to_markdown
+        from any2md.web import html_to_markdown
 
         mock_model = MagicMock()
         mock_tokenizer = MagicMock()
@@ -203,7 +203,7 @@ class TestHtmlToMarkdown(unittest.TestCase):
 
     def test_truncates_long_html(self):
         """html_to_markdown truncates HTML exceeding MAX_HTML_CHARS."""
-        from tomd.web import html_to_markdown, MAX_HTML_CHARS
+        from any2md.web import html_to_markdown, MAX_HTML_CHARS
 
         long_html = "x" * (MAX_HTML_CHARS + 1000)
 
@@ -226,14 +226,14 @@ class TestHtmlToMarkdown(unittest.TestCase):
 
     def test_raises_without_model(self):
         """html_to_markdown raises ValueError when model is None."""
-        from tomd.web import html_to_markdown
+        from any2md.web import html_to_markdown
 
         with self.assertRaises(ValueError):
             html_to_markdown("<html></html>", model=None, tokenizer=MagicMock())
 
     def test_raises_without_tokenizer(self):
         """html_to_markdown raises ValueError when tokenizer is None."""
-        from tomd.web import html_to_markdown
+        from any2md.web import html_to_markdown
 
         with self.assertRaises(ValueError):
             html_to_markdown("<html></html>", model=MagicMock(), tokenizer=None)
@@ -244,7 +244,7 @@ class TestFrontmatter(unittest.TestCase):
 
     def test_frontmatter_contains_required_fields(self):
         """page_to_markdown embeds all required metadata fields."""
-        from tomd.web import page_to_markdown
+        from any2md.web import page_to_markdown
 
         metadata = {
             "title": "Test Article",
@@ -265,7 +265,7 @@ class TestFrontmatter(unittest.TestCase):
 
     def test_frontmatter_followed_by_content(self):
         """page_to_markdown puts frontmatter before the body."""
-        from tomd.web import page_to_markdown
+        from any2md.web import page_to_markdown
 
         metadata = {"title": "X", "url": "https://x.com", "fetched_at": "2026-03-10T00:00:00Z"}
         result = page_to_markdown("# Body", metadata)
@@ -277,7 +277,7 @@ class TestFrontmatter(unittest.TestCase):
 
     def test_txt_format_omits_frontmatter(self):
         """page_to_text returns plain text without frontmatter."""
-        from tomd.web import page_to_text
+        from any2md.web import page_to_text
 
         result = page_to_text("# Title\n\nSome text.")
         self.assertNotIn("---", result)
@@ -289,14 +289,14 @@ class TestOutputFormat(unittest.TestCase):
 
     def test_output_format_values(self):
         """OutputFormat enum has md and txt variants."""
-        from tomd.common import OutputFormat
+        from any2md.common import OutputFormat
 
         self.assertEqual(OutputFormat.md.value, "md")
         self.assertEqual(OutputFormat.txt.value, "txt")
 
     def test_url_to_filename_basic(self):
         """url_to_filename converts URL to safe filename stem."""
-        from tomd.web import url_to_filename
+        from any2md.web import url_to_filename
 
         name = url_to_filename("https://example.com/my-article")
         self.assertNotIn("/", name)
@@ -305,7 +305,7 @@ class TestOutputFormat(unittest.TestCase):
 
     def test_url_to_filename_truncates(self):
         """url_to_filename truncates long URLs to 80 chars."""
-        from tomd.web import url_to_filename
+        from any2md.web import url_to_filename
 
         long_url = "https://example.com/" + "a" * 200
         name = url_to_filename(long_url)
@@ -313,7 +313,7 @@ class TestOutputFormat(unittest.TestCase):
 
     def test_url_to_filename_no_scheme(self):
         """url_to_filename strips https:// scheme."""
-        from tomd.web import url_to_filename
+        from any2md.web import url_to_filename
 
         name = url_to_filename("https://example.com/page")
         self.assertFalse(name.startswith("https"))
@@ -325,7 +325,7 @@ class TestBuildReaderPrompt(unittest.TestCase):
 
     def test_uses_apply_chat_template_when_available(self):
         """build_reader_prompt uses tokenizer.apply_chat_template if present."""
-        from tomd.web import build_reader_prompt
+        from any2md.web import build_reader_prompt
 
         mock_tokenizer = MagicMock()
         mock_tokenizer.apply_chat_template = MagicMock(return_value="<formatted>")
@@ -336,7 +336,7 @@ class TestBuildReaderPrompt(unittest.TestCase):
 
     def test_fallback_prompt_contains_html(self):
         """build_reader_prompt fallback includes the HTML content."""
-        from tomd.web import build_reader_prompt
+        from any2md.web import build_reader_prompt
 
         mock_tokenizer = MagicMock()
         mock_tokenizer.apply_chat_template = MagicMock(
@@ -349,7 +349,7 @@ class TestBuildReaderPrompt(unittest.TestCase):
 
     def test_fallback_prompt_contains_system_instruction(self):
         """build_reader_prompt fallback includes the system instruction."""
-        from tomd.web import build_reader_prompt, SYSTEM_PROMPT
+        from any2md.web import build_reader_prompt, SYSTEM_PROMPT
 
         mock_tokenizer = MagicMock()
         mock_tokenizer.apply_chat_template = MagicMock(

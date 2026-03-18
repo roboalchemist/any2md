@@ -22,13 +22,13 @@ from unittest.mock import MagicMock, patch
 
 
 
-from tomd.html import (
+from any2md.html import (
     extract_meta_tags,
     _extract_meta,
     html_path_to_stem,
     process_html_file,
 )
-from tomd.common import OutputFormat
+from any2md.common import OutputFormat
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ class TestProcessHtmlFile(unittest.TestCase):
             html_path.write_text(html_content)
             output_dir = Path(tmpdir) / 'out'
 
-            with patch('tomd.html.html_to_markdown', return_value='# Test Page\n\nHello world'):
+            with patch('any2md.html.html_to_markdown', return_value='# Test Page\n\nHello world'):
                 result = process_html_file(
                     html_path, mock_model, mock_tokenizer, output_dir, OutputFormat.md
                 )
@@ -202,7 +202,7 @@ class TestProcessHtmlFile(unittest.TestCase):
             html_path.write_text(html_content)
             output_dir = Path(tmpdir) / 'out'
 
-            with patch('tomd.html.html_to_markdown', return_value='Content'):
+            with patch('any2md.html.html_to_markdown', return_value='Content'):
                 result = process_html_file(
                     html_path, mock_model, mock_tokenizer, output_dir, OutputFormat.txt
                 )
@@ -221,7 +221,7 @@ class TestProcessHtmlFile(unittest.TestCase):
             html_path.write_text(html_content)
             output_dir = Path(tmpdir) / 'out'
 
-            with patch('tomd.html.html_to_markdown', return_value='# Meta Check'):
+            with patch('any2md.html.html_to_markdown', return_value='# Meta Check'):
                 result = process_html_file(
                     html_path, mock_model, mock_tokenizer, output_dir, OutputFormat.md
                 )
@@ -240,7 +240,7 @@ class TestProcessHtmlFile(unittest.TestCase):
             html_path.write_text(html_content)
             output_dir = Path(tmpdir) / 'out'
 
-            with patch('tomd.html.html_to_markdown', return_value='# My Title'):
+            with patch('any2md.html.html_to_markdown', return_value='# My Title'):
                 result = process_html_file(
                     html_path, mock_model, mock_tokenizer, output_dir, OutputFormat.md
                 )
@@ -260,7 +260,7 @@ class TestProcessHtmlFile(unittest.TestCase):
 
             self.assertFalse(output_dir.exists())
 
-            with patch('tomd.html.html_to_markdown', return_value='content'):
+            with patch('any2md.html.html_to_markdown', return_value='content'):
                 process_html_file(
                     html_path, mock_model, mock_tokenizer, output_dir, OutputFormat.md
                 )
@@ -277,7 +277,7 @@ class TestProcessHtmlFile(unittest.TestCase):
             html_path.write_text(html_content)
             output_dir = Path(tmpdir) / 'out'
 
-            with patch('tomd.html.html_to_markdown', return_value='content'):
+            with patch('any2md.html.html_to_markdown', return_value='content'):
                 result = process_html_file(
                     html_path, mock_model, mock_tokenizer, output_dir, OutputFormat.md
                 )
@@ -296,7 +296,7 @@ class TestBatchMode(unittest.TestCase):
     def test_batch_processes_all_html_files(self):
         """All .html files in a directory are processed in batch mode."""
         from typer.testing import CliRunner
-        from tomd.html import app
+        from any2md.html import app
 
         runner = CliRunner()
 
@@ -313,8 +313,8 @@ class TestBatchMode(unittest.TestCase):
             mock_tokenizer = MagicMock()
             mock_tokenizer.apply_chat_template = MagicMock(return_value='<prompt>')
 
-            with patch('tomd.html.load_reader_model', return_value=(mock_model, mock_tokenizer)):
-                with patch('tomd.html.html_to_markdown', return_value='# Content'):
+            with patch('any2md.html.load_reader_model', return_value=(mock_model, mock_tokenizer)):
+                with patch('any2md.html.html_to_markdown', return_value='# Content'):
                     result = runner.invoke(app, [str(input_dir), '-o', str(output_dir)])
 
             self.assertEqual(result.exit_code, 0, msg=result.output)
@@ -324,7 +324,7 @@ class TestBatchMode(unittest.TestCase):
     def test_batch_handles_htm_extension(self):
         """Batch mode includes .htm files as well as .html files."""
         from typer.testing import CliRunner
-        from tomd.html import app
+        from any2md.html import app
 
         runner = CliRunner()
 
@@ -339,8 +339,8 @@ class TestBatchMode(unittest.TestCase):
             mock_tokenizer = MagicMock()
             mock_tokenizer.apply_chat_template = MagicMock(return_value='<prompt>')
 
-            with patch('tomd.html.load_reader_model', return_value=(mock_model, mock_tokenizer)):
-                with patch('tomd.html.html_to_markdown', return_value='content'):
+            with patch('any2md.html.load_reader_model', return_value=(mock_model, mock_tokenizer)):
+                with patch('any2md.html.html_to_markdown', return_value='content'):
                     result = runner.invoke(app, [str(input_dir), '-o', str(output_dir)])
 
             self.assertEqual(result.exit_code, 0, msg=result.output)
@@ -350,7 +350,7 @@ class TestBatchMode(unittest.TestCase):
     def test_empty_directory_exits_with_error(self):
         """Batch mode exits with code 1 when no HTML files are found."""
         from typer.testing import CliRunner
-        from tomd.html import app
+        from any2md.html import app
 
         runner = CliRunner()
 
@@ -379,7 +379,7 @@ class TestOutputFormat(unittest.TestCase):
             html_path.write_text('<html><title>FM Test</title><body>X</body></html>')
             out_dir = Path(tmpdir) / 'out'
 
-            with patch('tomd.html.html_to_markdown', return_value='# FM Test\n\nX'):
+            with patch('any2md.html.html_to_markdown', return_value='# FM Test\n\nX'):
                 result = process_html_file(
                     html_path, mock_model, mock_tokenizer, out_dir, OutputFormat.md
                 )
@@ -397,7 +397,7 @@ class TestOutputFormat(unittest.TestCase):
             html_path.write_text('<html><body>Plain</body></html>')
             out_dir = Path(tmpdir) / 'out'
 
-            with patch('tomd.html.html_to_markdown', return_value='Plain content'):
+            with patch('any2md.html.html_to_markdown', return_value='Plain content'):
                 result = process_html_file(
                     html_path, mock_model, mock_tokenizer, out_dir, OutputFormat.txt
                 )
@@ -409,7 +409,7 @@ class TestOutputFormat(unittest.TestCase):
     def test_single_file_cli_md(self):
         """CLI processes a single HTML file in md mode end-to-end."""
         from typer.testing import CliRunner
-        from tomd.html import app
+        from any2md.html import app
 
         runner = CliRunner()
 
@@ -422,8 +422,8 @@ class TestOutputFormat(unittest.TestCase):
             mock_tokenizer = MagicMock()
             mock_tokenizer.apply_chat_template = MagicMock(return_value='<prompt>')
 
-            with patch('tomd.html.load_reader_model', return_value=(mock_model, mock_tokenizer)):
-                with patch('tomd.html.html_to_markdown', return_value='# Single\n\nBody'):
+            with patch('any2md.html.load_reader_model', return_value=(mock_model, mock_tokenizer)):
+                with patch('any2md.html.html_to_markdown', return_value='# Single\n\nBody'):
                     result = runner.invoke(
                         app, [str(html_path), '-o', str(out_dir), '-f', 'md']
                     )

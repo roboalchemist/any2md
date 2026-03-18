@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "2md"
+name = "any2md"
 version = "0.1.0"
 description = "Media to Markdown toolkit for Apple Silicon"
 readme = "README.md"
@@ -24,13 +24,13 @@ img = ["mlx-vlm"]
 web = ["mlx-lm", "httpx"]
 doc = ["markitdown>=0.1.0"]
 rst = []
-all = ["2md[stt,pdf,img,web,doc]"]
+all = ["any2md[stt,pdf,img,web,doc]"]
 
 [project.scripts]
-2md = "tomd.cli:app"
+any2md = "any2md.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tomd"]
+packages = ["src/any2md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

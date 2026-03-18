@@ -52,8 +52,8 @@ def test_doc2md_full_pipeline():
     if not (FIXTURES / "sample.docx").exists():
         pytest.skip("sample.docx fixture missing — run test/create_fixtures.py")
 
-    from tomd.doc import convert_document, extract_doc_metadata
-    from tomd.common import build_frontmatter
+    from any2md.doc import convert_document, extract_doc_metadata
+    from any2md.common import build_frontmatter
 
     path = FIXTURES / "sample.docx"
     content = convert_document(path)
@@ -72,8 +72,8 @@ def test_doc2md_pptx_pipeline():
     if not (FIXTURES / "sample.pptx").exists():
         pytest.skip("sample.pptx fixture missing — run test/create_fixtures.py")
 
-    from tomd.doc import convert_document, extract_doc_metadata
-    from tomd.common import build_frontmatter
+    from any2md.doc import convert_document, extract_doc_metadata
+    from any2md.common import build_frontmatter
 
     path = FIXTURES / "sample.pptx"
     content = convert_document(path)
@@ -90,7 +90,7 @@ def test_doc2md_xlsx_pipeline():
     if not (FIXTURES / "sample.xlsx").exists():
         pytest.skip("sample.xlsx fixture missing — run test/create_fixtures.py")
 
-    from tomd.doc import convert_document, extract_doc_metadata
+    from any2md.doc import convert_document, extract_doc_metadata
 
     path = FIXTURES / "sample.xlsx"
     content = convert_document(path)
@@ -106,7 +106,7 @@ def test_rst2md_full_pipeline():
     if not (FIXTURES / "sample.rst").exists():
         pytest.skip("sample.rst fixture missing — run test/create_fixtures.py")
 
-    from tomd.rst import process_rst_file
+    from any2md.rst import process_rst_file
 
     path = FIXTURES / "sample.rst"
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -124,7 +124,7 @@ def test_rst2md_txt_mode():
     if not (FIXTURES / "sample.rst").exists():
         pytest.skip("sample.rst fixture missing — run test/create_fixtures.py")
 
-    from tomd.rst import process_rst_file
+    from any2md.rst import process_rst_file
 
     path = FIXTURES / "sample.rst"
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -141,7 +141,7 @@ def test_pdf2md_text_path():
     if not (FIXTURES / "sample.pdf").exists():
         pytest.skip("sample.pdf fixture missing — run test/create_fixtures.py")
 
-    from tomd.pdf import extract_pages, pages_to_markdown, extract_pdf_metadata
+    from any2md.pdf import extract_pages, pages_to_markdown, extract_pdf_metadata
     import fitz
 
     path = FIXTURES / "sample.pdf"
@@ -170,9 +170,9 @@ def test_html2md_full_pipeline():
     if not (FIXTURES / "sample.html").exists():
         pytest.skip("sample.html fixture missing — run test/create_fixtures.py")
 
-    from tomd.html import process_html_file
-    from tomd.web import load_reader_model
-    from tomd.common import OutputFormat
+    from any2md.html import process_html_file
+    from any2md.web import load_reader_model
+    from any2md.common import OutputFormat
 
     path = FIXTURES / "sample.html"
     model, tokenizer = load_reader_model(READERLM_MODEL)
@@ -198,7 +198,7 @@ def test_img2md_full_pipeline():
     if not (FIXTURES / "sample.jpg").exists():
         pytest.skip("sample.jpg fixture missing — run test/create_fixtures.py")
 
-    from tomd.img import load_vlm_model, image_to_markdown_text, image_to_markdown, get_image_metadata
+    from any2md.img import load_vlm_model, image_to_markdown_text, image_to_markdown, get_image_metadata
     from mlx_vlm.utils import load_config
 
     path = FIXTURES / "sample.jpg"
@@ -221,7 +221,7 @@ def test_pdf2md_ocr_path():
     if not (FIXTURES / "sample.pdf").exists():
         pytest.skip("sample.pdf fixture missing — run test/create_fixtures.py")
 
-    from tomd.pdf import load_vlm_for_pdf, extract_page_via_vlm
+    from any2md.pdf import load_vlm_for_pdf, extract_page_via_vlm
     from pathlib import Path
 
     path = FIXTURES / "sample.pdf"
@@ -250,7 +250,7 @@ def test_yt2md_transcription():
     if not audio.exists():
         pytest.skip(f"test_voice.mp3 not found at {audio}")
 
-    from tomd.yt import transcribe, convert_audio_for_whisper, resolve_model
+    from any2md.yt import transcribe, convert_audio_for_whisper, resolve_model
 
     model_id = resolve_model("parakeet-v3")
 

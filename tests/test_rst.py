@@ -19,8 +19,8 @@ from unittest.mock import MagicMock, patch
 
 
 
-import tomd.rst as rst2md
-from tomd.rst import (
+import any2md.rst as rst2md
+from any2md.rst import (
     extract_rst_metadata,
     rst_to_markdown_text,
     rst_to_full_markdown,
@@ -338,7 +338,7 @@ class TestProcessRstFile(unittest.TestCase):
 class TestBatchMode(unittest.TestCase):
     def test_processes_all_rst_files(self):
         from typer.testing import CliRunner
-        from tomd.rst import app
+        from any2md.rst import app
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
@@ -355,7 +355,7 @@ class TestBatchMode(unittest.TestCase):
 
     def test_empty_directory_exits_with_error(self):
         from typer.testing import CliRunner
-        from tomd.rst import app
+        from any2md.rst import app
 
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = CliRunner()
@@ -364,7 +364,7 @@ class TestBatchMode(unittest.TestCase):
 
     def test_missing_file_exits_with_error(self):
         from typer.testing import CliRunner
-        from tomd.rst import app
+        from any2md.rst import app
 
         runner = CliRunner()
         result = runner.invoke(app, ["/nonexistent/path/file.rst"])
@@ -374,7 +374,7 @@ class TestBatchMode(unittest.TestCase):
 class TestCLI(unittest.TestCase):
     def test_help_exits_cleanly(self):
         from typer.testing import CliRunner
-        from tomd.rst import app
+        from any2md.rst import app
 
         runner = CliRunner()
         result = runner.invoke(app, ["--help"])
@@ -384,7 +384,7 @@ class TestCLI(unittest.TestCase):
     def test_single_file_end_to_end(self):
         """Convert a real .rst file to markdown end-to-end."""
         from typer.testing import CliRunner
-        from tomd.rst import app
+        from any2md.rst import app
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
@@ -405,7 +405,7 @@ class TestCLI(unittest.TestCase):
     def test_txt_format_flag(self):
         """The -f txt flag produces plain text output without YAML frontmatter."""
         from typer.testing import CliRunner
-        from tomd.rst import app
+        from any2md.rst import app
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)

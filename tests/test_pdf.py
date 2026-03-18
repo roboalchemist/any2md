@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
-from tomd.pdf import (
+from any2md.pdf import (
     parse_page_range,
     pages_to_markdown,
     pages_to_text,
@@ -22,7 +22,7 @@ from tomd.pdf import (
     THIN_PAGE_THRESHOLD,
     VLM_MODEL_DEFAULT,
 )
-import tomd.pdf as pdf2md  # for patching
+import any2md.pdf as pdf2md  # for patching
 
 
 class TestPdf2Md(unittest.TestCase):
@@ -113,9 +113,9 @@ class TestVlmFallback(unittest.TestCase):
 
         fake_pil_image = MagicMock()
 
-        with patch('tomd.pdf.fitz') as mock_fitz, \
-             patch('tomd.pdf.Image') as mock_pil_image_module, \
-             patch('tomd.pdf.io') as mock_io:
+        with patch('any2md.pdf.fitz') as mock_fitz, \
+             patch('any2md.pdf.Image') as mock_pil_image_module, \
+             patch('any2md.pdf.io') as mock_io:
             mock_fitz.open.return_value = fake_doc
             mock_fitz.Matrix.return_value = MagicMock()
             mock_io.BytesIO.return_value = MagicMock()
@@ -139,8 +139,8 @@ class TestVlmFallback(unittest.TestCase):
         mock_processor = MagicMock()
         mock_config = {}
 
-        with patch('tomd.pdf.extract_pages', return_value=thin_pages), \
-             patch('tomd.pdf.extract_page_via_vlm', return_value='VLM extracted text') as mock_vlm:
+        with patch('any2md.pdf.extract_pages', return_value=thin_pages), \
+             patch('any2md.pdf.extract_page_via_vlm', return_value='VLM extracted text') as mock_vlm:
             results = extract_pages_hybrid(
                 '/fake/doc.pdf',
                 ocr=True,
@@ -167,8 +167,8 @@ class TestVlmFallback(unittest.TestCase):
             {'page': 1, 'text': 'x' * 500, 'is_thin': False},
             {'page': 2, 'text': 'y' * 300, 'is_thin': False},
         ]
-        with patch('tomd.pdf.extract_pages', return_value=normal_pages), \
-             patch('tomd.pdf.extract_page_via_vlm') as mock_vlm:
+        with patch('any2md.pdf.extract_pages', return_value=normal_pages), \
+             patch('any2md.pdf.extract_page_via_vlm') as mock_vlm:
             results = extract_pages_hybrid(
                 '/fake/doc.pdf',
                 ocr=True,
@@ -190,8 +190,8 @@ class TestVlmFallback(unittest.TestCase):
             {'page': 2, 'text': '', 'is_thin': True},
             {'page': 3, 'text': 'normal content here', 'is_thin': False},
         ]
-        with patch('tomd.pdf.extract_pages', return_value=all_pages), \
-             patch('tomd.pdf.extract_page_via_vlm', return_value='VLM result') as mock_vlm:
+        with patch('any2md.pdf.extract_pages', return_value=all_pages), \
+             patch('any2md.pdf.extract_page_via_vlm', return_value='VLM result') as mock_vlm:
             results = extract_pages_hybrid(
                 '/fake/doc.pdf',
                 ocr=False,
@@ -212,8 +212,8 @@ class TestVlmFallback(unittest.TestCase):
         pages = [
             {'page': 1, 'text': '', 'is_thin': True},
         ]
-        with patch('tomd.pdf.extract_pages', return_value=pages), \
-             patch('tomd.pdf.extract_page_via_vlm') as mock_vlm:
+        with patch('any2md.pdf.extract_pages', return_value=pages), \
+             patch('any2md.pdf.extract_page_via_vlm') as mock_vlm:
             results = extract_pages_hybrid('/fake/doc.pdf', ocr=False, force_ocr=False)
 
         mock_vlm.assert_not_called()
@@ -231,11 +231,11 @@ class TestVlmFallback(unittest.TestCase):
         fake_tmp_file.__exit__ = MagicMock(return_value=False)
         fake_tmp_file.name = fake_tmp_path
 
-        with patch('tomd.pdf.render_page_as_image', return_value=fake_image), \
-             patch('tomd.pdf.tempfile') as mock_tempfile, \
-             patch('tomd.pdf.os.unlink') as mock_unlink, \
-             patch('tomd.pdf.apply_chat_template', return_value='formatted_prompt'), \
-             patch('tomd.pdf.generate', return_value='Extracted markdown text') as mock_gen:
+        with patch('any2md.pdf.render_page_as_image', return_value=fake_image), \
+             patch('any2md.pdf.tempfile') as mock_tempfile, \
+             patch('any2md.pdf.os.unlink') as mock_unlink, \
+             patch('any2md.pdf.apply_chat_template', return_value='formatted_prompt'), \
+             patch('any2md.pdf.generate', return_value='Extracted markdown text') as mock_gen:
 
             mock_tempfile.NamedTemporaryFile.return_value = fake_tmp_file
 

@@ -26,10 +26,10 @@ from typing import List, Optional
 import typer
 from typing_extensions import Annotated
 
-from tomd.common import build_frontmatter, setup_logging, OutputFormat, write_output
+from any2md.common import build_frontmatter, setup_logging, OutputFormat, write_output
 
-# Import shared ReaderLM functions from tomd.web to avoid code duplication
-from tomd.web import load_reader_model, html_to_markdown, DEFAULT_MODEL, page_to_markdown, page_to_text
+# Import shared ReaderLM functions from any2md.web to avoid code duplication
+from any2md.web import load_reader_model, html_to_markdown, DEFAULT_MODEL, page_to_markdown, page_to_text
 
 # Configure logging (will be overridden by setup_logging in main)
 logging.basicConfig(

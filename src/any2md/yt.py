@@ -39,7 +39,7 @@ import logging
 import typer
 from typing_extensions import Annotated
 
-from tomd.common import build_frontmatter  # noqa: F401 — re-exported for backward compat
+from any2md.common import build_frontmatter  # noqa: F401 — re-exported for backward compat
 
 # Configure logging
 logging.basicConfig(

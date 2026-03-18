@@ -27,7 +27,7 @@ from typing import List, Optional, Tuple
 import typer
 from typing_extensions import Annotated
 
-from tomd.common import build_frontmatter, setup_logging, write_output
+from any2md.common import build_frontmatter, setup_logging, write_output
 
 # mlx-vlm imports — loaded at module level so tests can patch img2md.generate etc.
 # Falls back gracefully if mlx-vlm is not installed; ImportError is raised at call time.

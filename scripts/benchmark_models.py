@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from tomd.yt import resolve_model, MODEL_ALIASES
+from any2md.yt import resolve_model, MODEL_ALIASES
 
 # Models to benchmark (full HuggingFace IDs or aliases)
 MODELS = [
