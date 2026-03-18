@@ -23,6 +23,10 @@ try:
         segments_to_srt,
         segments_to_markdown,
         segments_to_text,
+        segments_to_markdown_diarized,
+        segments_to_srt_diarized,
+        segments_to_text_diarized,
+        align_speakers,
         build_frontmatter,
         resolve_model,
         MODEL_ALIASES,
@@ -254,6 +258,124 @@ class TestYt2Srt(unittest.TestCase):
         self.assertIn("fetched_at:", result)
         self.assertIn("# My Video", result)
         self.assertIn("**[00:00]** Hello.", result)
+
+
+class FakeDiarizationSegment:
+    """Minimal stand-in for mlx_audio DiarizationSegment."""
+    def __init__(self, start, end, speaker):
+        self.start = start
+        self.end = end
+        self.speaker = speaker
+
+
+class TestDiarization(unittest.TestCase):
+    """Test cases for speaker diarization alignment and formatters."""
+
+    def test_align_single_speaker(self):
+        """All transcription segments overlap one diarization speaker."""
+        trans = [
+            FakeAlignedSentence(0.0, 3.0, "Hello there."),
+            FakeAlignedSentence(3.0, 6.0, "How are you?"),
+        ]
+        diar = [FakeDiarizationSegment(0.0, 10.0, 0)]
+        result = align_speakers(trans, diar)
+        # Should merge into one segment since same speaker
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["speaker"], 0)
+        self.assertIn("Hello there.", result[0]["text"])
+        self.assertIn("How are you?", result[0]["text"])
+
+    def test_align_two_speakers_alternating(self):
+        """Speaker 0 talks 0-5s, speaker 1 talks 5-10s."""
+        trans = [
+            FakeAlignedSentence(0.0, 4.0, "First speaker here."),
+            FakeAlignedSentence(5.0, 9.0, "Second speaker here."),
+        ]
+        diar = [
+            FakeDiarizationSegment(0.0, 5.0, 0),
+            FakeDiarizationSegment(5.0, 10.0, 1),
+        ]
+        result = align_speakers(trans, diar)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["speaker"], 0)
+        self.assertEqual(result[1]["speaker"], 1)
+
+    def test_align_overlapping_speakers(self):
+        """Diarization has overlapping ranges, majority-overlap wins."""
+        trans = [FakeAlignedSentence(2.0, 8.0, "Overlapping test.")]
+        diar = [
+            FakeDiarizationSegment(0.0, 4.0, 0),   # overlap: 2.0-4.0 = 2s
+            FakeDiarizationSegment(3.0, 10.0, 1),   # overlap: 3.0-8.0 = 5s
+        ]
+        result = align_speakers(trans, diar)
+        self.assertEqual(result[0]["speaker"], 1)  # speaker 1 has more overlap
+
+    def test_align_no_diarization_segments(self):
+        """Empty diarization → all segments get SPEAKER_0 fallback."""
+        trans = [FakeAlignedSentence(0.0, 5.0, "No diarization.")]
+        result = align_speakers(trans, [])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["speaker"], 0)
+
+    def test_align_preserves_text(self):
+        """Alignment doesn't mutate the original text."""
+        trans = [FakeAlignedSentence(0.0, 5.0, "  Preserve me.  ")]
+        diar = [FakeDiarizationSegment(0.0, 5.0, 0)]
+        result = align_speakers(trans, diar)
+        self.assertEqual(result[0]["text"], "Preserve me.")
+
+    def test_segments_to_markdown_diarized_single_speaker(self):
+        """One speaker, output has SPEAKER_0 header."""
+        segs = [{"start": 0.0, "end": 5.0, "text": "Hello.", "speaker": 0}]
+        result = segments_to_markdown_diarized(segs)
+        self.assertIn("**SPEAKER_0**", result)
+        self.assertIn("Hello.", result)
+
+    def test_segments_to_markdown_diarized_multi_speaker(self):
+        """Two speakers, alternating headers."""
+        segs = [
+            {"start": 0.0, "end": 5.0, "text": "Hi from zero.", "speaker": 0},
+            {"start": 5.0, "end": 10.0, "text": "Hi from one.", "speaker": 1},
+        ]
+        result = segments_to_markdown_diarized(segs, title="Test")
+        self.assertIn("**SPEAKER_0**", result)
+        self.assertIn("**SPEAKER_1**", result)
+        self.assertIn("# Test", result)
+
+    def test_segments_to_markdown_diarized_merges_consecutive(self):
+        """Adjacent same-speaker segments should already be merged by align_speakers."""
+        # This tests the formatter with pre-merged input
+        segs = [
+            {"start": 0.0, "end": 10.0, "text": "Long monologue.", "speaker": 0},
+        ]
+        result = segments_to_markdown_diarized(segs)
+        self.assertEqual(result.count("**SPEAKER_0**"), 1)
+
+    def test_segments_to_srt_diarized(self):
+        """SRT entries contain [SPEAKER_N] prefix."""
+        segs = [
+            {"start": 0.0, "end": 5.0, "text": "Hello.", "speaker": 0},
+            {"start": 5.0, "end": 10.0, "text": "World.", "speaker": 1},
+        ]
+        result = segments_to_srt_diarized(segs)
+        self.assertIn("[SPEAKER_0] Hello.", result)
+        self.assertIn("[SPEAKER_1] World.", result)
+
+    def test_segments_to_text_diarized(self):
+        """Plain text with SPEAKER_N: prefix."""
+        segs = [
+            {"start": 0.0, "end": 5.0, "text": "Hello.", "speaker": 0},
+            {"start": 5.0, "end": 10.0, "text": "World.", "speaker": 1},
+        ]
+        result = segments_to_text_diarized(segs)
+        self.assertIn("SPEAKER_0: Hello.", result)
+        self.assertIn("SPEAKER_1: World.", result)
+
+    def test_diarize_adds_speakers_to_metadata(self):
+        """Metadata dict gets speakers field in frontmatter."""
+        metadata = {"title": "Test", "speakers": 2}
+        result = build_frontmatter(metadata)
+        self.assertIn("speakers: 2", result)
 
 
 if __name__ == "__main__":

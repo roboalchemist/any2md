@@ -33,12 +33,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TEST_AUDIO = Path(__file__).parent.parent / "test_audio" / "test_voice.mp3"
+TWO_SPEAKERS_AUDIO = Path(__file__).parent.parent / "test_audio" / "two_speakers.wav"
+YT_INTERVIEW_AUDIO = Path(__file__).parent.parent / "test_audio" / "yt_interview.wav"
 
 READERLM_MODEL = "mlx-community/jinaai-ReaderLM-v2"
 # Use 3B as the smallest viable Qwen VL model with mlx-community support.
 # If this model isn't available, fall back to 7B (see comment in VLM tests below).
 QWEN_VL_MODEL = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
 PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+SORTFORMER_MODEL = "mlx-community/diar_sortformer_4spk-v1-fp32"
 
 
 # ---------------------------------------------------------------------------
@@ -207,3 +210,124 @@ def test_parakeet_transcription():
     lower = full_text.lower()
     assert any(word in lower for word in ["test", "this", "voice", "script", "direct"]), \
         f"Expected speech content not in transcript: {repr(full_text[:300])}"
+
+
+# ---------------------------------------------------------------------------
+# Sortformer Diarization
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_diarize_single_speaker_audio():
+    """Sortformer on single-speaker audio returns 1 speaker."""
+    assert TEST_AUDIO.exists(), f"Test audio not found: {TEST_AUDIO}"
+
+    from yt2md import load_diarization_model, diarize, convert_audio_for_whisper
+
+    model = load_diarization_model(SORTFORMER_MODEL)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav_path = convert_audio_for_whisper(str(TEST_AUDIO), tmpdir)
+        output = diarize(wav_path, model)
+
+    assert output.num_speakers <= 1 or len({s.speaker for s in output.segments}) <= 1, \
+        f"Expected <=1 speaker, got {output.num_speakers}"
+    for seg in output.segments:
+        assert seg.speaker == 0
+
+
+@pytest.mark.slow
+def test_diarize_multi_speaker_audio():
+    """Sortformer on two-speaker synthetic audio detects >= 2 speakers."""
+    if not TWO_SPEAKERS_AUDIO.exists():
+        pytest.skip(f"Two-speaker fixture not found: {TWO_SPEAKERS_AUDIO}")
+
+    from yt2md import load_diarization_model, diarize
+
+    model = load_diarization_model(SORTFORMER_MODEL)
+    output = diarize(str(TWO_SPEAKERS_AUDIO), model)
+
+    speaker_ids = {s.speaker for s in output.segments}
+    assert len(speaker_ids) >= 2, f"Expected >= 2 speakers, got {speaker_ids}"
+    assert len(output.segments) >= 2, "Expected multiple segments"
+
+
+@pytest.mark.slow
+def test_diarize_end_to_end_single():
+    """Full yt2md pipeline with --diarize on single-speaker audio."""
+    assert TEST_AUDIO.exists()
+
+    from yt2md import transcribe, convert_audio_for_whisper
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav_path = convert_audio_for_whisper(str(TEST_AUDIO), tmpdir)
+        metadata = {"title": "Test Voice"}
+        output_path = transcribe(
+            wav_path, PARAKEET_MODEL, output_dir=tmpdir,
+            metadata=metadata, diarize_model_name=SORTFORMER_MODEL,
+        )
+        content = Path(output_path).read_text()
+
+    assert content.startswith("---"), "Output must start with YAML frontmatter"
+    assert "SPEAKER_0" in content
+    assert "speakers:" in content
+
+
+@pytest.mark.slow
+def test_diarize_end_to_end_multi():
+    """Full yt2md pipeline with --diarize on multi-speaker audio."""
+    if not TWO_SPEAKERS_AUDIO.exists():
+        pytest.skip(f"Two-speaker fixture not found: {TWO_SPEAKERS_AUDIO}")
+
+    from yt2md import transcribe
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        metadata = {"title": "Two Speakers"}
+        output_path = transcribe(
+            str(TWO_SPEAKERS_AUDIO), PARAKEET_MODEL, output_dir=tmpdir,
+            metadata=metadata, diarize_model_name=SORTFORMER_MODEL,
+        )
+        content = Path(output_path).read_text()
+
+    assert "SPEAKER_0" in content
+    assert "SPEAKER_1" in content or content.count("SPEAKER_") >= 2
+    assert "speakers:" in content
+
+
+@pytest.mark.slow
+def test_diarize_real_youtube_interview():
+    """Sortformer on a real YouTube interview clip detects multiple speakers."""
+    if not YT_INTERVIEW_AUDIO.exists():
+        pytest.skip(f"YouTube interview fixture not found: {YT_INTERVIEW_AUDIO}")
+
+    from yt2md import load_diarization_model, diarize
+
+    model = load_diarization_model(SORTFORMER_MODEL)
+    output = diarize(str(YT_INTERVIEW_AUDIO), model)
+
+    speaker_ids = {s.speaker for s in output.segments}
+    assert len(speaker_ids) >= 2, f"Expected >= 2 speakers in interview, got {speaker_ids}"
+
+
+@pytest.mark.slow
+def test_diarize_end_to_end_youtube():
+    """Full yt2md pipeline with --diarize on real YouTube interview."""
+    if not YT_INTERVIEW_AUDIO.exists():
+        pytest.skip(f"YouTube interview fixture not found: {YT_INTERVIEW_AUDIO}")
+
+    from yt2md import transcribe
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        metadata = {"title": "YouTube Interview"}
+        output_path = transcribe(
+            str(YT_INTERVIEW_AUDIO), PARAKEET_MODEL, output_dir=tmpdir,
+            metadata=metadata, diarize_model_name=SORTFORMER_MODEL,
+        )
+        content = Path(output_path).read_text()
+
+    # Should have multiple speakers
+    speaker_labels = [line for line in content.split("\n") if "SPEAKER_" in line]
+    assert len(speaker_labels) >= 2, f"Expected multiple speaker labels, got {len(speaker_labels)}"
+    # Should have real transcribed content
+    text_lines = [line for line in content.split("\n") if line.strip() and not line.startswith("---") and not line.startswith("**") and not line.startswith("#") and ":" not in line[:20]]
+    total_text = " ".join(text_lines)
+    assert len(total_text) > 100, "Expected substantial transcription text"

@@ -184,6 +184,73 @@ def create_pdf():
     print(f"Created: {path}")
 
 
+def create_two_speakers_wav():
+    """Create test_audio/two_speakers.wav — synthetic two-speaker conversation via macOS say."""
+    import subprocess
+    import tempfile
+
+    test_audio = Path(__file__).parent.parent / "test_audio"
+    test_audio.mkdir(parents=True, exist_ok=True)
+    output = test_audio / "two_speakers.wav"
+
+    if output.exists():
+        print(f"Already exists: {output}")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+
+        # Speaker A (Albert — male voice): 3 utterances
+        utterances_a = [
+            ("Albert", "Hello, my name is Albert. I will be discussing the first topic today."),
+            ("Albert", "That is a great point. Let me add some additional context to what you said."),
+            ("Albert", "Thank you for the discussion. I think we covered everything."),
+        ]
+        # Speaker B (Allison — female voice): 2 utterances
+        utterances_b = [
+            ("Allison", "Nice to meet you Albert. I have some thoughts on the second topic."),
+            ("Allison", "I agree with your assessment. The data supports that conclusion."),
+        ]
+
+        # Generate individual audio files
+        files = []
+        pattern = [utterances_a[0], utterances_b[0], utterances_a[1], utterances_b[1], utterances_a[2]]
+        for i, (voice, text) in enumerate(pattern):
+            aiff = tmp / f"utt_{i}.aiff"
+            subprocess.run(["say", "-v", voice, "-o", str(aiff), text], check=True)
+            files.append(aiff)
+
+        # Create silence
+        silence = tmp / "silence.wav"
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "lavfi", "-t", "0.5",
+            "-i", "anullsrc=r=16000:cl=mono", str(silence),
+        ], check=True, capture_output=True)
+
+        # Build ffmpeg concat filter
+        inputs = []
+        filter_parts = []
+        idx = 0
+        for i, f in enumerate(files):
+            inputs.extend(["-i", str(f)])
+            filter_parts.append(f"[{idx}]")
+            idx += 1
+            if i < len(files) - 1:
+                inputs.extend(["-i", str(silence)])
+                filter_parts.append(f"[{idx}]")
+                idx += 1
+
+        n = len(filter_parts)
+        filter_str = "".join(filter_parts) + f"concat=n={n}:v=0:a=1"
+
+        cmd = ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex", filter_str,
+            "-ar", "16000", "-ac", "1", str(output),
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        print(f"Created: {output}")
+
+
 def main():
     print(f"Creating fixtures in: {FIXTURES}")
     create_rst()
@@ -193,6 +260,7 @@ def main():
     create_pptx()
     create_xlsx()
     create_pdf()
+    create_two_speakers_wav()
     print("\nDone. Fixtures:")
     for f in sorted(FIXTURES.iterdir()):
         size = f.stat().st_size

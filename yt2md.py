@@ -386,6 +386,140 @@ def segments_to_markdown(sentences: List, title: Optional[str] = None,
     return "\n".join(lines)
 
 
+DEFAULT_DIARIZE_MODEL = "mlx-community/diar_sortformer_4spk-v1-fp32"
+
+
+def load_diarization_model(model_name: str = DEFAULT_DIARIZE_MODEL):
+    """Load Sortformer diarization model via mlx_audio.vad.load()."""
+    try:
+        from mlx_audio.vad import load
+    except ImportError:
+        logger.error("mlx-audio VAD module required. Install with: pip install mlx-audio[stt]")
+        raise
+    logger.info("Loading diarization model: %s", model_name)
+    return load(model_name)
+
+
+def diarize(audio_path: str, model):
+    """Run speaker diarization on audio file. Returns DiarizationOutput."""
+    logger.info("Running diarization on: %s", audio_path)
+    start = time.time()
+    result = model.generate(audio_path)
+    logger.info("Diarization completed in %.2f seconds", time.time() - start)
+    return result
+
+
+def align_speakers(transcription_segments: List, diarization_segments: List) -> List[Dict]:
+    """Align transcription segments with diarization speaker labels.
+
+    For each transcription segment, finds the diarization speaker with the most
+    temporal overlap and assigns that speaker. Then merges consecutive segments
+    from the same speaker into speaker turns.
+
+    Args:
+        transcription_segments: List of AlignedSentence objects or dicts with start/end/text
+        diarization_segments: List of DiarizationSegment objects with start/end/speaker
+
+    Returns:
+        List of dicts: {start, end, text, speaker}
+    """
+    if not transcription_segments:
+        return []
+
+    aligned = []
+    for seg in transcription_segments:
+        start_t, end_t, text = _extract_sentence_fields(seg)
+        if start_t is None:
+            continue
+
+        # Find speaker with most overlap
+        speaker = 0  # fallback
+        best_overlap = 0.0
+        for dseg in diarization_segments:
+            overlap_start = max(start_t, dseg.start)
+            overlap_end = min(end_t, dseg.end)
+            overlap = max(0.0, overlap_end - overlap_start)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                speaker = dseg.speaker
+
+        aligned.append({
+            "start": start_t,
+            "end": end_t,
+            "text": text.strip(),
+            "speaker": speaker,
+        })
+
+    # Merge consecutive segments from the same speaker
+    if not aligned:
+        return []
+
+    merged = [aligned[0].copy()]
+    for seg in aligned[1:]:
+        if seg["speaker"] == merged[-1]["speaker"]:
+            merged[-1]["end"] = seg["end"]
+            merged[-1]["text"] += " " + seg["text"]
+        else:
+            merged.append(seg.copy())
+
+    return merged
+
+
+def segments_to_markdown_diarized(segments: List[Dict], title: Optional[str] = None,
+                                   metadata: Optional[Dict] = None) -> str:
+    """Convert diarized segments to markdown with speaker headers.
+
+    Format:
+        **SPEAKER_0** [00:00:00]
+
+        text here...
+
+        **SPEAKER_1** [00:05:30]
+
+        other text...
+    """
+    lines = []
+
+    if metadata:
+        lines.append(build_frontmatter(metadata))
+        lines.append("")
+
+    if title:
+        lines.append(f"# {title}")
+        lines.append("")
+
+    for seg in segments:
+        ts = format_timestamp_md(seg["start"])
+        lines.append(f"**SPEAKER_{seg['speaker']}** [{ts}]")
+        lines.append("")
+        lines.append(seg["text"])
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def segments_to_srt_diarized(segments: List[Dict]) -> str:
+    """Convert diarized segments to SRT with speaker prefix."""
+    srt_lines = []
+    for i, seg in enumerate(segments):
+        srt_lines.append(f"{i+1}")
+        srt_lines.append(
+            f"{format_timestamp_srt(seg['start'])} --> {format_timestamp_srt(seg['end'])}"
+        )
+        srt_lines.append(f"[SPEAKER_{seg['speaker']}] {seg['text']}")
+        if i < len(segments) - 1:
+            srt_lines.append("")
+    return "\n".join(srt_lines)
+
+
+def segments_to_text_diarized(segments: List[Dict]) -> str:
+    """Convert diarized segments to plain text with speaker prefix."""
+    parts = []
+    for seg in segments:
+        parts.append(f"SPEAKER_{seg['speaker']}: {seg['text']}")
+    return "\n\n".join(parts)
+
+
 def segments_to_text(sentences: List) -> str:
     """
     Convert AlignedResult sentences to plain text (no timestamps).
@@ -414,6 +548,7 @@ def transcribe(
     chunk_duration: float = 30.0,
     output_format: str = DEFAULT_FORMAT,
     metadata: Optional[Dict] = None,
+    diarize_model_name: Optional[str] = None,
 ) -> str:
     """
     Transcribe audio file using mlx-audio (Parakeet).
@@ -427,6 +562,7 @@ def transcribe(
         chunk_duration: Duration of each audio chunk in seconds (default: 30.0)
         output_format: Output format — "md" (default), "srt", or "txt"
         metadata: Optional metadata dict for YAML frontmatter (markdown only)
+        diarize_model_name: If set, run speaker diarization with this Sortformer model
 
     Returns:
         Path to the generated output file
@@ -469,8 +605,27 @@ def transcribe(
     end_time = time.time()
     logger.info(f"Transcription completed in {end_time - start_time:.2f} seconds")
 
+    # Optional diarization
+    diarized_segments = None
+    if diarize_model_name:
+        diar_model = load_diarization_model(diarize_model_name)
+        diar_output = diarize(audio_file, diar_model)
+        diarized_segments = align_speakers(result.sentences, diar_output.segments)
+        num_speakers = diar_output.num_speakers or len({s.speaker for s in diar_output.segments})
+        if metadata is not None:
+            metadata["speakers"] = num_speakers
+        logger.info("Detected %d speaker(s)", num_speakers)
+
     # Format output
-    if output_format == "md":
+    if diarized_segments is not None:
+        display_title = video_title or os.path.splitext(os.path.basename(audio_file))[0]
+        if output_format == "md":
+            content = segments_to_markdown_diarized(diarized_segments, title=display_title, metadata=metadata)
+        elif output_format == "txt":
+            content = segments_to_text_diarized(diarized_segments)
+        else:
+            content = segments_to_srt_diarized(diarized_segments)
+    elif output_format == "md":
         display_title = video_title or os.path.splitext(os.path.basename(audio_file))[0]
         content = segments_to_markdown(result.sentences, title=display_title, metadata=metadata)
     elif output_format == "txt":
@@ -624,6 +779,14 @@ def main(
         "--keep-audio", "-k",
         help="Keep downloaded/converted audio files instead of cleaning up.",
     )] = False,
+    diarize_flag: Annotated[bool, typer.Option(
+        "--diarize/--no-diarize",
+        help="Enable speaker diarization (identifies who is speaking).",
+    )] = False,
+    diarize_model: Annotated[str, typer.Option(
+        "--diarize-model",
+        help="Sortformer diarization model ID.",
+    )] = DEFAULT_DIARIZE_MODEL,
     verbose: Annotated[bool, typer.Option(
         "--verbose", "-v",
         help="Enable verbose (DEBUG) logging.",
@@ -669,6 +832,7 @@ def main(
                 chunk_duration,
                 format.value,
                 metadata,
+                diarize_model_name=diarize_model if diarize_flag else None,
             )
 
             logger.info(f"Transcription completed successfully. Output saved to: {output_file}")

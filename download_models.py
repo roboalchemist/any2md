@@ -50,6 +50,11 @@ DOCLING_MODELS = [
     "mlx-community/SmolDocling-256M-preview-mlx-bf16",
 ]
 
+# Diarization models (Sortformer)
+DIARIZE_MODELS = [
+    "mlx-community/diar_sortformer_4spk-v1-fp32",
+]
+
 app = typer.Typer(
     help="Download MLX models for 2md tools.",
     add_completion=False,
@@ -92,6 +97,23 @@ def _download_vlm_model(model_id: str) -> None:
         logger.error(f"  Failed: {e}")
 
 
+def _download_diarize_model(model_id: str) -> None:
+    """Download a single diarization model via mlx-audio VAD."""
+    try:
+        from mlx_audio.vad import load
+    except ImportError:
+        logger.error("mlx-audio[stt] is required. Install it with: pip install mlx-audio[stt]")
+        raise
+
+    logger.info(f"Downloading diarization model: {model_id}")
+    start = time.time()
+    try:
+        load(model_id)
+        logger.info(f"  Ready in {time.time() - start:.2f}s")
+    except Exception as e:
+        logger.error(f"  Failed: {e}")
+
+
 def _download_lm_model(model_id: str) -> None:
     """Download a text/reader model via mlx-lm."""
     try:
@@ -127,6 +149,10 @@ def main(
         "--docling",
         help="Download SmolDocling-256M for document layout analysis.",
     )] = False,
+    diarize: Annotated[bool, typer.Option(
+        "--diarize",
+        help="Download Sortformer diarization model.",
+    )] = False,
     all_models: Annotated[bool, typer.Option(
         "--all",
         help="Download all models.",
@@ -139,7 +165,7 @@ def main(
     to download only the models needed for specific tools.
     """
     # If no flags, download all
-    if not any([stt, vlm, reader, docling, all_models]):
+    if not any([stt, vlm, reader, docling, diarize, all_models]):
         all_models = True
 
     if stt or all_models:
@@ -161,6 +187,11 @@ def main(
         logger.info("--- Docling models (SmolDocling) ---")
         for model_id in DOCLING_MODELS:
             _download_lm_model(model_id)
+
+    if diarize or all_models:
+        logger.info("--- Diarization models (Sortformer) ---")
+        for model_id in DIARIZE_MODELS:
+            _download_diarize_model(model_id)
 
     logger.info("Done.")
 
