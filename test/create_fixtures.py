@@ -185,9 +185,12 @@ def create_pdf():
 
 
 def create_two_speakers_wav():
-    """Create test_audio/two_speakers.wav — synthetic two-speaker conversation via macOS say."""
+    """Download test_audio/two_speakers.wav from HuggingFace VoxConverse dataset.
+
+    Source: https://huggingface.co/datasets/diarizers-community/voxconverse
+    Split: dev, shard 0, row 4 — 44.5s clip with 2 speakers, 9 segments.
+    """
     import subprocess
-    import tempfile
 
     test_audio = Path(__file__).parent.parent / "test_audio"
     test_audio.mkdir(parents=True, exist_ok=True)
@@ -197,58 +200,70 @@ def create_two_speakers_wav():
         print(f"Already exists: {output}")
         return
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
+    try:
+        import pandas as pd
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        print("WARNING: pandas/huggingface_hub not available; skipping two_speakers.wav")
+        return
 
-        # Speaker A (Albert — male voice): 3 utterances
-        utterances_a = [
-            ("Albert", "Hello, my name is Albert. I will be discussing the first topic today."),
-            ("Albert", "That is a great point. Let me add some additional context to what you said."),
-            ("Albert", "Thank you for the discussion. I think we covered everything."),
-        ]
-        # Speaker B (Allison — female voice): 2 utterances
-        utterances_b = [
-            ("Allison", "Nice to meet you Albert. I have some thoughts on the second topic."),
-            ("Allison", "I agree with your assessment. The data supports that conclusion."),
-        ]
+    parquet = hf_hub_download(
+        "diarizers-community/voxconverse",
+        "data/dev-00000-of-00005.parquet",
+        repo_type="dataset",
+    )
+    df = pd.read_parquet(parquet)
+    row = df.iloc[4]  # 2-speaker, ~45s, 9 segments
 
-        # Generate individual audio files
-        files = []
-        pattern = [utterances_a[0], utterances_b[0], utterances_a[1], utterances_b[1], utterances_a[2]]
-        for i, (voice, text) in enumerate(pattern):
-            aiff = tmp / f"utt_{i}.aiff"
-            subprocess.run(["say", "-v", voice, "-o", str(aiff), text], check=True)
-            files.append(aiff)
+    raw = test_audio / "_tmp_raw.wav"
+    raw.write_bytes(row["audio"]["bytes"])
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(raw), "-ar", "16000", "-ac", "1", str(output)],
+        capture_output=True, check=True,
+    )
+    raw.unlink()
+    print(f"Created: {output}")
 
-        # Create silence
-        silence = tmp / "silence.wav"
-        subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi", "-t", "0.5",
-            "-i", "anullsrc=r=16000:cl=mono", str(silence),
-        ], check=True, capture_output=True)
 
-        # Build ffmpeg concat filter
-        inputs = []
-        filter_parts = []
-        idx = 0
-        for i, f in enumerate(files):
-            inputs.extend(["-i", str(f)])
-            filter_parts.append(f"[{idx}]")
-            idx += 1
-            if i < len(files) - 1:
-                inputs.extend(["-i", str(silence)])
-                filter_parts.append(f"[{idx}]")
-                idx += 1
+def create_yt_interview_wav():
+    """Download test_audio/yt_interview.wav from HuggingFace VoxConverse dataset.
 
-        n = len(filter_parts)
-        filter_str = "".join(filter_parts) + f"concat=n={n}:v=0:a=1"
+    Source: https://huggingface.co/datasets/diarizers-community/voxconverse
+    Split: test, shard 0, row 3 — trimmed to 90s, 2 speakers.
+    """
+    import subprocess
 
-        cmd = ["ffmpeg", "-y"] + inputs + [
-            "-filter_complex", filter_str,
-            "-ar", "16000", "-ac", "1", str(output),
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-        print(f"Created: {output}")
+    test_audio = Path(__file__).parent.parent / "test_audio"
+    test_audio.mkdir(parents=True, exist_ok=True)
+    output = test_audio / "yt_interview.wav"
+
+    if output.exists():
+        print(f"Already exists: {output}")
+        return
+
+    try:
+        import pandas as pd
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        print("WARNING: pandas/huggingface_hub not available; skipping yt_interview.wav")
+        return
+
+    parquet = hf_hub_download(
+        "diarizers-community/voxconverse",
+        "data/test-00000-of-00011.parquet",
+        repo_type="dataset",
+    )
+    df = pd.read_parquet(parquet)
+    row = df.iloc[3]  # 2-speaker, ~572s full
+
+    raw = test_audio / "_tmp_raw.wav"
+    raw.write_bytes(row["audio"]["bytes"])
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(raw), "-ar", "16000", "-ac", "1", "-t", "90", str(output)],
+        capture_output=True, check=True,
+    )
+    raw.unlink()
+    print(f"Created: {output}")
 
 
 def main():
@@ -261,6 +276,7 @@ def main():
     create_xlsx()
     create_pdf()
     create_two_speakers_wav()
+    create_yt_interview_wav()
     print("\nDone. Fixtures:")
     for f in sorted(FIXTURES.iterdir()):
         size = f.stat().st_size
