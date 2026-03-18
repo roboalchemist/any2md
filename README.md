@@ -2,127 +2,125 @@
 
 A toolkit for converting media, documents, and web content to markdown. All AI inference runs locally on Apple Silicon via MLX — no cloud APIs.
 
-## Tools
-
-| Tool | Input | Method | Output |
-|------|-------|--------|--------|
-| `yt2md.py` | YouTube URLs, audio, video files | Parakeet STT (mlx-audio) | md / srt / txt |
-| `pdf2md.py` | PDF files | pymupdf4llm, optional VLM OCR | md / txt |
-| `web2md.py` | Web URLs | ReaderLM-v2 (mlx-lm) | md / txt |
-| `doc2md.py` | DOCX, PPTX, XLSX, EPUB, ODT, RTF | markitdown | md / txt |
-| `img2md.py` | JPEG, PNG, GIF, BMP, WebP, TIFF | Qwen2.5-VL (mlx-vlm) | md / txt |
-| `html2md.py` | Local HTML files | ReaderLM-v2 (mlx-lm) | md / txt |
-| `rst2md.py` | reStructuredText files | pypandoc / docutils | md / txt |
-
-## Quick Start
+## Install
 
 ```bash
-brew install ffmpeg
-pip install -r requirements.txt
+# From PyPI (coming soon)
+uv pip install '2md[all]'
 
-# Optional: pre-download MLX models before first use
-python download_models.py --stt       # Parakeet (yt2md)
-python download_models.py --vlm       # Qwen2.5-VL (img2md, pdf2md --ocr)
-python download_models.py --reader    # ReaderLM-v2 (web2md, html2md)
+# From source
+git clone https://github.com/roboalchemist/2md.git
+cd 2md
+uv pip install -e '.[all]'
+
+# Or install only what you need
+uv pip install -e '.[stt]'    # YouTube/audio/video transcription
+uv pip install -e '.[pdf]'    # PDF extraction
+uv pip install -e '.[img]'    # Image OCR via VLM
+uv pip install -e '.[web]'    # Web page conversion
+
+# System dependency for audio/video
+brew install ffmpeg
 ```
 
 ## Usage
 
-### yt2md — YouTube / audio / video
+### Auto-detect (just pass a file)
 
 ```bash
-# YouTube URL or video ID
-python yt2md.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-python yt2md.py dQw4w9WgXcQ
-
-# Local audio/video file
-python yt2md.py lecture.mp4 -f srt -o ~/subtitles
-
-# Options
-python yt2md.py dQw4w9WgXcQ -m parakeet-v3 -f md -o ~/notes -k -v
-#   -m MODEL     Model alias or HuggingFace ID [default: mlx-community/parakeet-tdt-0.6b-v3]
-#   -f FORMAT    md | srt | txt  [default: md]
-#   -o DIR       Output directory
-#   -k           Keep downloaded/converted audio
-#   -v           Verbose logging
+2md lecture.mp4                        # audio/video → markdown
+2md lecture.mp4 --diarize              # with speaker diarization
+2md document.pdf                       # PDF → markdown
+2md screenshot.png                     # image → markdown (VLM)
+2md https://example.com/article        # web page → markdown
+2md page.html                          # local HTML → markdown
+2md report.docx                        # office doc → markdown
+2md readme.rst                         # RST → markdown
 ```
 
-Model aliases: `parakeet-v3`, `parakeet-v2`, `parakeet-1.1b`, `parakeet-ctc`
-
-### pdf2md — PDF files
+### Explicit subcommands (for full options)
 
 ```bash
-python pdf2md.py document.pdf
-python pdf2md.py document.pdf -p 1-10,15 -o ~/notes
-
-# VLM OCR for scanned/image-only PDFs
-python pdf2md.py scanned.pdf --ocr           # VLM fallback on thin-text pages
-python pdf2md.py scanned.pdf --force-ocr     # VLM on every page
-
-# Options
-#   -p RANGE     Page range, e.g. "1-10,15,20-25"
-#   --ocr        VLM fallback for scanned pages
-#   --force-ocr  Force VLM on all pages
-#   --vlm-model  VLM model [default: mlx-community/Qwen2.5-VL-7B-Instruct-4bit]
+2md yt --help       # audio/video options
+2md pdf --help      # PDF options
+2md img --help      # image options
+2md web --help      # web URL options
+2md html --help     # local HTML options
+2md doc --help      # office document options
+2md rst --help      # RST options
 ```
 
-### web2md — Web URLs
+### Examples
 
 ```bash
-python web2md.py https://example.com/article
-python web2md.py https://example.com/article -o ~/notes -f md
+# YouTube with speaker diarization
+2md yt "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --diarize -o ~/notes
+
+# PDF with page range
+2md pdf document.pdf -p 1-10,15 -o ~/notes
+
+# PDF with VLM OCR for scanned pages
+2md pdf scanned.pdf --ocr
+
+# Image directory
+2md img ~/screenshots/ --prompt "Extract all text and tables"
+
+# Specific model
+2md yt podcast.mp3 -m parakeet-1.1b -f srt
 ```
 
-### doc2md — Office documents
+## Tools
 
-```bash
-python doc2md.py report.docx
-python doc2md.py slides.pptx -o ~/notes
-python doc2md.py spreadsheet.xlsx -f txt
-```
-
-Supported: DOCX, PPTX, XLSX, EPUB, ODT, RTF
-
-### img2md — Images
-
-```bash
-python img2md.py screenshot.png
-python img2md.py ~/screenshots/    # Process entire directory
-
-# Options
-#   -m MODEL     VLM alias or HuggingFace ID [default: qwen2.5-vl-7b]
-#   --prompt     Custom instruction for the VLM
-#   --max-tokens Max tokens per image [default: 2048]
-```
-
-Model aliases: `qwen2.5-vl-7b`, `qwen2.5-vl-3b`, `qwen2.5-vl-2b`, `qwen2.5-vl-72b`, `smoldocling`
-
-### html2md — Local HTML files
-
-```bash
-python html2md.py page.html
-python html2md.py ~/exported-site/    # Process all .html/.htm files in directory
-```
-
-### rst2md — reStructuredText
-
-```bash
-python rst2md.py docs/readme.rst
-python rst2md.py docs/            # Process all .rst/.rest files in directory
-```
+| Subcommand | Input | Engine | Output |
+|------------|-------|--------|--------|
+| `yt` | YouTube URLs, audio, video | Parakeet STT + Sortformer diarization (mlx-audio) | md / srt / txt |
+| `pdf` | PDF files | pymupdf4llm, optional Qwen VLM OCR | md / txt |
+| `img` | JPEG, PNG, GIF, BMP, WebP, TIFF | Qwen2.5-VL (mlx-vlm) | md / txt |
+| `web` | Web URLs | ReaderLM-v2 (mlx-lm) | md / txt |
+| `html` | Local HTML files | ReaderLM-v2 (mlx-lm) | md / txt |
+| `doc` | DOCX, PPTX, XLSX, EPUB, ODT, RTF | markitdown | md / txt |
+| `rst` | reStructuredText | pypandoc / docutils | md / txt |
 
 ## Architecture
 
-All tools share `md_common.py` for frontmatter generation, logging setup, and output utilities. Each tool produces YAML frontmatter with source metadata (title, author, dates, etc.) followed by the converted markdown body.
+```
+src/tomd/
+├── cli.py       # Unified entry point with auto-detect + subcommands
+├── common.py    # Shared: frontmatter builder, logging, output helpers
+├── yt.py        # Audio/video transcription + speaker diarization
+├── pdf.py       # PDF extraction + optional VLM OCR
+├── img.py       # Image OCR via vision-language model
+├── web.py       # Web URL → markdown via ReaderLM
+├── html.py      # Local HTML → markdown via ReaderLM
+├── doc.py       # Office documents via markitdown
+└── rst.py       # reStructuredText conversion
+```
 
-AI tools use local MLX inference only:
-- **STT**: mlx-audio (Parakeet) — fast Apple Silicon speech recognition
-- **VLM**: mlx-vlm (Qwen2.5-VL) — vision-language model for images and OCR
-- **HTML/URL**: mlx-lm (ReaderLM-v2) — HTML-to-markdown conversion
+All tools produce YAML frontmatter with source metadata (title, author, dates, etc.) followed by the converted markdown body.
+
+AI runs locally on Apple Silicon via MLX:
+- **STT**: mlx-audio Parakeet — speech recognition
+- **Diarization**: mlx-audio Sortformer — speaker identification
+- **VLM**: mlx-vlm Qwen2.5-VL — image OCR and understanding
+- **HTML→MD**: mlx-lm ReaderLM-v2 — HTML to markdown
+
+## Pre-download models
+
+```bash
+python scripts/download_models.py --stt       # Parakeet (yt)
+python scripts/download_models.py --diarize   # Sortformer (yt --diarize)
+python scripts/download_models.py --vlm       # Qwen2.5-VL (img, pdf --ocr)
+python scripts/download_models.py --reader    # ReaderLM-v2 (web, html)
+python scripts/download_models.py --all       # Everything
+```
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - Apple Silicon Mac (M1/M2/M3/M4)
-- ffmpeg (`brew install ffmpeg`) — required for yt2md
-- pypandoc requires pandoc (`brew install pandoc`) — required for rst2md primary path
+- ffmpeg (`brew install ffmpeg`) — for audio/video
+- pandoc (`brew install pandoc`) — optional, for rst2md
+
+## License
+
+[MIT](LICENSE)
