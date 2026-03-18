@@ -267,7 +267,7 @@ Add `--diarize` model to `download_models.py --diarize` flag.
 
 ## Available Resources
 
-- **Code**: `/Users/joseph.schlesinger/gitea/2md/` — all source files
+- **Code**: project root — all source files
 - **Existing tools**: `yt2md.py` (759 lines), `pdf2md.py` (320 lines) — patterns to follow
 - **Tests**: 25 passing tests across test_yt2md.py and test_pdf2md.py — study for patterns
 - **Machine**: 36GB Apple Silicon Mac — fits Qwen3.5-27B 4-bit (~17GB) easily
