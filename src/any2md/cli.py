@@ -89,6 +89,8 @@ def _get_tool_apps() -> dict:
             pass
 
     _try_import("yt", "any2md.yt")
+    _try_import("audio", "any2md.yt")
+    _try_import("video", "any2md.yt")
     _try_import("pdf", "any2md.pdf")
     _try_import("img", "any2md.img")
     _try_import("web", "any2md.web")
@@ -109,7 +111,7 @@ def _get_tool_apps() -> dict:
 
 
 _SUBCOMMANDS = {
-    "yt", "pdf", "img", "web", "html", "doc", "rst",
+    "yt", "audio", "video", "pdf", "img", "web", "html", "doc", "rst",
     "csv", "data", "db", "sub", "nb", "eml", "org", "tex", "man",
 }
 
@@ -181,7 +183,8 @@ Auto-detect examples:
   any2md readme.rst                 RST → markdown
 
 Subcommands (run 'any2md <cmd> --help' for options):
-  yt    Audio/video transcription      pdf   PDF extraction
+  audio Audio transcription            video Video transcription
+  yt    Audio/video + YouTube          pdf   PDF extraction
   img   Image OCR via VLM              web   Web URL conversion
   html  Local HTML conversion          doc   Office docs (DOCX/PPTX/XLSX/EPUB)
   rst   reStructuredText               csv   CSV/TSV tables
