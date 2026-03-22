@@ -82,6 +82,10 @@ def _detect_tool(input_path: str) -> str:
         return "tex"
     if suffix in (".1", ".2", ".3", ".4", ".5", ".6", ".7", ".8", ".9"):
         return "man"
+    # Detect git repository directories
+    p = Path(input_path)
+    if p.is_dir() and (p / ".git").exists():
+        return "repo"
     return ""
 
 
@@ -114,13 +118,14 @@ def _get_tool_apps() -> dict:
     _try_import("org", "any2md.org")
     _try_import("tex", "any2md.tex")
     _try_import("man", "any2md.man")
+    _try_import("repo", "any2md.repo")
 
     return apps
 
 
 _SUBCOMMANDS = {
     "yt", "audio", "video", "pdf", "img", "web", "html", "doc", "rst",
-    "csv", "data", "db", "sub", "nb", "eml", "org", "tex", "man",
+    "csv", "data", "db", "sub", "nb", "eml", "org", "tex", "man", "repo",
     "deps",
 }
 
@@ -281,6 +286,7 @@ Subcommands (run 'any2md <cmd> --help' for options):
   sub   Subtitles (SRT/VTT/ASS)        nb    Jupyter notebooks
   eml   Email (.eml/.mbox)             org   Org-mode
   tex   LaTeX                          man   Unix man pages
+  repo  Git repository via repomix
   deps  Show optional dependency status
 
 Available on this system: {available}""")
