@@ -12,6 +12,7 @@ Contains shared code used across yt2md, pdf2md, and future tools:
 
 import json
 import logging
+import os
 import sys
 from enum import Enum
 from pathlib import Path
@@ -29,10 +30,17 @@ def setup_logging(verbose: bool = False) -> None:
     All log output goes to stderr via an explicit StreamHandler so that
     stdout remains clean for machine-readable data (file paths, etc.).
 
+    Respects ANY2MD_QUIET env var (set by --quiet/-q flag): when set,
+    uses WARNING level regardless of verbose flag.
+
     Args:
         verbose: If True, set level to DEBUG; otherwise INFO.
     """
-    level = logging.DEBUG if verbose else logging.INFO
+    # --quiet / -q flag sets ANY2MD_QUIET env var before converters are loaded
+    if os.environ.get("ANY2MD_QUIET"):
+        level = logging.WARNING
+    else:
+        level = logging.DEBUG if verbose else logging.INFO
     root = logging.getLogger()
     # Avoid adding duplicate handlers if called more than once
     if root.handlers:

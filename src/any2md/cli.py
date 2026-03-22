@@ -14,6 +14,8 @@ Usage:
     any2md pdf document.pdf --pages 1-10
 """
 
+import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -22,6 +24,10 @@ from typing import Optional
 import typer
 
 from any2md import __version__
+
+# Respect NO_COLOR env var (https://no-color.org/)
+if os.environ.get("NO_COLOR"):
+    os.environ["TERM"] = "dumb"  # Disables rich colors
 
 # Extension -> tool mapping
 _AUDIO_VIDEO_EXTS = {".mp3", ".wav", ".mp4", ".webm", ".m4a", ".flac", ".ogg", ".aac", ".mov", ".avi", ".mkv"}
@@ -134,6 +140,15 @@ def app():
         _show_version()
         return
 
+    # Handle --quiet / -q early: suppress INFO logs and strip flag from args
+    if "--quiet" in args or "-q" in args:
+        os.environ["ANY2MD_QUIET"] = "1"
+        # Silence root logger immediately (catches import-time messages like NumExpr)
+        logging.root.setLevel(logging.WARNING)
+        # Also silence common noisy loggers that fire at import time
+        logging.getLogger("numexpr").setLevel(logging.WARNING)
+        args = [a for a in args if a not in ("--quiet", "-q")]
+
     first = args[0]
 
     tool_apps = _get_tool_apps()
@@ -215,6 +230,8 @@ Subcommands (run 'any2md <cmd> --help' for options):
   tex   LaTeX                          man   Unix man pages
 
 Available on this system: {available}""")
+    typer.echo("\nReport bugs to: https://github.com/roboalchemist/any2md/issues")
+    typer.echo("Home page: https://github.com/roboalchemist/any2md")
 
 
 if __name__ == "__main__":
