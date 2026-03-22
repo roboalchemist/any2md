@@ -178,9 +178,9 @@ def render_page_as_image(pdf_path: Path, page_index: int, dpi: int = 150):
         ImportError: If fitz (PyMuPDF) or Pillow is not installed
     """
     if fitz is None:
-        raise ImportError("PyMuPDF (fitz) is required. Install it with: pip install pymupdf")
+        raise ImportError("PyMuPDF (fitz) is required. Install it with: uv pip install pymupdf4llm")
     if Image is None:
-        raise ImportError("Pillow is required. Install it with: pip install Pillow")
+        raise ImportError("Pillow is required. Install it with: uv pip install pymupdf4llm")
 
     doc = fitz.open(str(pdf_path))
     try:
@@ -207,7 +207,7 @@ def load_vlm_for_pdf(model_name: str) -> Tuple:
         ImportError: If mlx-vlm is not installed
     """
     if _mlx_load is None or _mlx_load_config is None:
-        raise ImportError("mlx-vlm is required for --ocr. Install it with: pip install mlx-vlm")
+        raise ImportError("mlx-vlm is required for --ocr. Install it with: uv pip install mlx-vlm")
 
     logger.info("Loading VLM model for OCR: %s", model_name)
     model, processor = _mlx_load(model_name)
@@ -233,7 +233,7 @@ def extract_page_via_vlm(pdf_path: Path, page_index: int, model, processor, conf
         ImportError: If mlx-vlm is not installed
     """
     if apply_chat_template is None or generate is None:
-        raise ImportError("mlx-vlm is required for --ocr. Install it with: pip install mlx-vlm")
+        raise ImportError("mlx-vlm is required for --ocr. Install it with: uv pip install mlx-vlm")
 
     img = render_page_as_image(pdf_path, page_index)
 
@@ -345,7 +345,7 @@ def extract_pages(pdf_path: str, page_indices: Optional[List[int]] = None) -> Li
     try:
         import pymupdf4llm
     except ImportError:
-        logger.error("pymupdf4llm is required. Install it with: pip install pymupdf4llm")
+        logger.error("pymupdf4llm is required. Install it with: uv pip install pymupdf4llm")
         raise
 
     logger.info(f"Extracting text from: {pdf_path}")
@@ -519,9 +519,9 @@ def main(
     # Open document for metadata
     if fitz is None:
         if is_json_mode():
-            write_json_error("MISSING_DEPENDENCY", "PyMuPDF (fitz) is required. Install it with: pip install pymupdf")
+            write_json_error("MISSING_DEPENDENCY", "PyMuPDF (fitz) is required. Install it with: uv pip install pymupdf4llm")
         else:
-            logger.error("PyMuPDF (fitz) is required. Install it with: pip install pymupdf")
+            logger.error("PyMuPDF (fitz) is required. Install it with: uv pip install pymupdf4llm")
         raise typer.Exit(code=1)
     doc = fitz.open(pdf_path)
     metadata = extract_pdf_metadata(doc)

@@ -284,4 +284,4 @@ def load_vlm(model: str):
         # Will be implemented in img2md.py phase
         raise NotImplementedError("load_vlm not yet implemented")
     except ImportError:
-        raise ImportError("mlx-vlm not installed. Run: pip install mlx-vlm")
+        raise ImportError("mlx-vlm not installed. Run: uv pip install mlx-vlm")

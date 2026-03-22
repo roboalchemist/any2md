@@ -138,7 +138,7 @@ def load_vlm_model(model_name: str) -> Tuple:
         ImportError: If mlx-vlm is not installed
     """
     if load is None or load_config is None:
-        raise ImportError("mlx-vlm is required. Install it with: pip install mlx-vlm")
+        raise ImportError("mlx-vlm is required. Install it with: uv pip install mlx-vlm")
 
     logger.info("Loading VLM model: %s", model_name)
     model, processor = load(model_name)
@@ -171,7 +171,7 @@ def image_to_markdown_text(
         Raw markdown text output from the VLM
     """
     if generate is None or apply_chat_template is None:
-        raise ImportError("mlx-vlm is required. Install it with: pip install mlx-vlm")
+        raise ImportError("mlx-vlm is required. Install it with: uv pip install mlx-vlm")
 
     logger.info("Running VLM inference on: %s", image_path.name)
 

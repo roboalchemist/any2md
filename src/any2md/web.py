@@ -213,7 +213,7 @@ def load_reader_model(model_name: str = DEFAULT_MODEL):
         from mlx_lm import load
     except ImportError:
         raise ImportError(
-            "mlx-lm is required for web2md. Install it with: pip install mlx-lm"
+            "mlx-lm is required for web2md. Install it with: uv pip install mlx-lm httpx"
         )
 
     logger.info("Loading model: %s", model_name)
@@ -282,7 +282,7 @@ def html_to_markdown(html: str, model=None, tokenizer=None) -> str:
         from mlx_lm import generate
     except ImportError:
         raise ImportError(
-            "mlx-lm is required for web2md. Install it with: pip install mlx-lm"
+            "mlx-lm is required for web2md. Install it with: uv pip install mlx-lm httpx"
         )
 
     # Truncate if too long

@@ -197,7 +197,7 @@ def convert_document(path: Path) -> str:
         from markitdown import MarkItDown
     except ImportError:
         raise ImportError(
-            "markitdown is required. Install it with: pip install 'markitdown[all]'"
+            "markitdown is required. Install it with: uv pip install markitdown"
         )
 
     logger.info("Converting document: %s", path)

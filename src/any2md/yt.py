@@ -113,7 +113,7 @@ def download_youtube_audio(url_or_id: str, output_dir: Optional[str] = None) -> 
     try:
         import yt_dlp
     except ImportError:
-        logger.error("yt-dlp is required. Install it with: pip install yt-dlp")
+        logger.error("yt-dlp is required. Install it with: uv pip install 'mlx-audio[stt]' yt-dlp")
         raise
 
     video_id = extract_video_id(url_or_id)
@@ -394,7 +394,7 @@ def load_diarization_model(model_name: str = DEFAULT_DIARIZE_MODEL):
     try:
         from mlx_audio.vad import load
     except ImportError:
-        logger.error("mlx-audio VAD module required. Install with: pip install mlx-audio[stt]")
+        logger.error("mlx-audio VAD module required. Install with: uv pip install 'mlx-audio[stt]' yt-dlp")
         raise
     logger.info("Loading diarization model: %s", model_name)
     return load(model_name)
@@ -570,7 +570,7 @@ def transcribe(
     try:
         from mlx_audio.stt import load
     except ImportError:
-        logger.error("mlx-audio is required. Install it with: pip install mlx-audio[stt]")
+        logger.error("mlx-audio is required. Install it with: uv pip install 'mlx-audio[stt]' yt-dlp")
         raise
 
     model_name = resolve_model(model_name)

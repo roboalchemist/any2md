@@ -121,7 +121,46 @@ def _get_tool_apps() -> dict:
 _SUBCOMMANDS = {
     "yt", "audio", "video", "pdf", "img", "web", "html", "doc", "rst",
     "csv", "data", "db", "sub", "nb", "eml", "org", "tex", "man",
+    "deps",
 }
+
+
+def _try_import_dep(module: str) -> bool:
+    """Return True if the given module can be imported."""
+    try:
+        __import__(module)
+        return True
+    except ImportError:
+        return False
+
+
+def _show_deps():
+    """Print dependency status for all optional packages."""
+    deps = {
+        "typer": True,  # always present
+        "pymupdf4llm": _try_import_dep("pymupdf4llm"),
+        "mlx-vlm": _try_import_dep("mlx_vlm"),
+        "mlx-lm": _try_import_dep("mlx_lm"),
+        "mlx-audio": _try_import_dep("mlx_audio"),
+        "markitdown": _try_import_dep("markitdown"),
+        "httpx": _try_import_dep("httpx"),
+        "pysubs2": _try_import_dep("pysubs2"),
+        "pypandoc": _try_import_dep("pypandoc"),
+    }
+    typer.echo("any2md dependency status:", err=True)
+    for name, installed in deps.items():
+        status = "installed" if installed else "MISSING"
+        typer.echo(f"  {name}: {status}", err=True)
+
+    missing = [name for name, installed in deps.items() if not installed]
+    if missing:
+        typer.echo("", err=True)
+        typer.echo("Install missing dependencies:", err=True)
+        typer.echo("  uv pip install pymupdf4llm          # pdf", err=True)
+        typer.echo("  uv pip install mlx-vlm              # img, pdf --ocr", err=True)
+        typer.echo("  uv pip install mlx-lm httpx         # web, html", err=True)
+        typer.echo('  uv pip install "mlx-audio[stt]" yt-dlp  # yt/audio/video', err=True)
+        typer.echo("  uv pip install markitdown           # doc", err=True)
 
 
 def app():
@@ -159,6 +198,11 @@ def app():
         logging.getLogger("numexpr").setLevel(logging.WARNING)
 
     first = args[0]
+
+    # deps subcommand — no tool_apps needed
+    if first == "deps":
+        _show_deps()
+        return
 
     tool_apps = _get_tool_apps()
 
@@ -237,6 +281,7 @@ Subcommands (run 'any2md <cmd> --help' for options):
   sub   Subtitles (SRT/VTT/ASS)        nb    Jupyter notebooks
   eml   Email (.eml/.mbox)             org   Org-mode
   tex   LaTeX                          man   Unix man pages
+  deps  Show optional dependency status
 
 Available on this system: {available}""")
     typer.echo("\nReport bugs to: https://github.com/roboalchemist/any2md/issues")

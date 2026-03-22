@@ -288,7 +288,14 @@ def main(
     output_dir_path = Path(output_dir)
 
     # Load model once for all files
-    reader_model, tokenizer = load_reader_model(model)
+    try:
+        reader_model, tokenizer = load_reader_model(model)
+    except ImportError as exc:
+        if is_json_mode():
+            write_json_error("MISSING_DEPENDENCY", str(exc))
+        else:
+            logger.error("%s", exc)
+        raise typer.Exit(code=1)
 
     if json_output or is_json_mode():
         import json as _json
