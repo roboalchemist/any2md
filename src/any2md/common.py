@@ -10,11 +10,12 @@ Contains shared code used across yt2md, pdf2md, and future tools:
 - load_vlm: Stub for future VLM tools
 """
 
+import json
 import logging
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +152,88 @@ def build_frontmatter(metadata: Dict) -> str:
 
     lines.append("---")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# JSON output
+# ---------------------------------------------------------------------------
+
+def _filter_fields(data: dict, fields_str: str) -> dict:
+    """
+    Filter output dict to only include requested fields (dot-notation).
+
+    Examples:
+        _filter_fields(data, "frontmatter.rows,content")
+        → {"frontmatter": {"rows": ...}, "content": ...}
+
+    Args:
+        data: Source dict to filter.
+        fields_str: Comma-separated list of dot-notation field paths.
+
+    Returns:
+        New dict containing only the requested fields.
+    """
+    requested = [f.strip() for f in fields_str.split(",")]
+    result: dict = {}
+    for field in requested:
+        parts = field.split(".")
+        value = data
+        for part in parts:
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
+                value = None
+                break
+        # Set nested value in result
+        target = result
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = value
+    return result
+
+
+def write_json_output(
+    metadata: dict,
+    content: str,
+    source,
+    converter: str,
+    fields: Optional[str] = None,
+) -> None:
+    """
+    Write structured JSON output to stdout for agent consumption.
+
+    The output schema is::
+
+        {
+            "frontmatter": <metadata dict>,
+            "content":     <converted text>,
+            "source":      <input path or URL as string>,
+            "converter":   <converter name, e.g. "csv">
+        }
+
+    When *fields* is provided only the requested dot-notation fields are
+    included in the output (e.g. ``"frontmatter.rows,content"``).
+
+    All log output goes to stderr so stdout stays clean for piping to jq.
+
+    Args:
+        metadata:  Metadata dict (same data passed to build_frontmatter).
+        content:   Converted markdown/text content string.
+        source:    Input path or URL (converted to str via default=str).
+        converter: Name of the converter module (e.g. "csv", "pdf").
+        fields:    Optional comma-separated dot-notation field paths to
+                   include.  None means return all fields.
+    """
+    output: dict = {
+        "frontmatter": metadata,
+        "content": content,
+        "source": str(source),
+        "converter": converter,
+    }
+    if fields:
+        output = _filter_fields(output, fields)
+    json.dump(output, sys.stdout, indent=2, default=str)
+    sys.stdout.write("\n")
 
 
 # ---------------------------------------------------------------------------
