@@ -21,6 +21,8 @@ from typing import Optional
 
 import typer
 
+from any2md import __version__
+
 # Extension -> tool mapping
 _AUDIO_VIDEO_EXTS = {".mp3", ".wav", ".mp4", ".webm", ".m4a", ".flac", ".ogg", ".aac", ".mov", ".avi", ".mkv"}
 _IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".heic", ".webp"}
@@ -124,6 +126,10 @@ def app():
         _show_help()
         return
 
+    if args == ["--version"] or args == ["-V"]:
+        _show_version()
+        return
+
     first = args[0]
 
     tool_apps = _get_tool_apps()
@@ -152,6 +158,15 @@ def app():
         err=True,
     )
     raise SystemExit(1)
+
+
+def _show_version():
+    """Print version info and exit 0."""
+    typer.echo(
+        f"any2md {__version__}\n"
+        "Copyright 2024 roboalchemist\n"
+        "License MIT: <https://opensource.org/licenses/MIT>"
+    )
 
 
 def _show_help():
