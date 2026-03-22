@@ -1,0 +1,34 @@
+# any2md
+
+> Convert any file format to markdown with YAML frontmatter. Local AI on Apple Silicon via MLX.
+
+## Subcommands
+
+- yt/audio/video: Transcribe audio/video via Parakeet STT with optional Sortformer diarization
+- pdf: Extract PDF text via pymupdf4llm, optional VLM OCR for scanned pages
+- img: Image OCR via Qwen3.5 vision-language model
+- web: Web URL to markdown via ReaderLM-v2
+- html: Local HTML to markdown via ReaderLM-v2
+- doc: Office documents (DOCX/PPTX/XLSX/EPUB/ODT/RTF) via markitdown
+- rst: reStructuredText via pypandoc/docutils
+- csv: CSV/TSV to markdown tables (stdlib, zero deps)
+- data: JSON/YAML/JSONL to markdown (stdlib, zero deps)
+- db: SQLite schema + sample data (stdlib, zero deps)
+- sub: Subtitles (SRT/VTT/ASS) via pysubs2
+- nb: Jupyter notebooks (stdlib, zero deps)
+- eml: Email .eml/.mbox (stdlib, zero deps)
+- org: Org-mode (pure regex, zero deps)
+- tex: LaTeX (pure regex, zero deps)
+- man: Unix man pages (mandoc + regex, zero deps)
+
+## Common Flags
+
+All subcommands: --output-dir/-o, --format/-f (md|txt), --verbose/-v
+
+## Install
+
+brew install roboalchemist/tap/any2md
+
+## Docs
+
+- [README](https://github.com/roboalchemist/any2md/blob/main/README.md)
