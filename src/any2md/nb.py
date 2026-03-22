@@ -392,7 +392,7 @@ def main(
     for nb_file in nb_files:
         out = process_nb_file(nb_file, output_dir, fmt,
                               include_outputs=include_outputs)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

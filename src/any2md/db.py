@@ -537,7 +537,7 @@ def main(
         max_tables=max_tables,
         include_views=not skip_views,
     )
-    typer.echo(f"Written: {out}")
+    typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

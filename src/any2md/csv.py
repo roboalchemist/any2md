@@ -448,7 +448,7 @@ def main(
     fmt = format.value
     for csv_file in csv_files:
         out = process_csv_file(csv_file, output_dir, fmt, effective_max_rows, max_col_width)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

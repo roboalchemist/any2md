@@ -661,7 +661,7 @@ def main(
     fmt = format.value
     for org_file in org_files:
         out = process_org_file(org_file, output_dir, fmt)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

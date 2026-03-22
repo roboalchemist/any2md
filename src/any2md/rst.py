@@ -389,7 +389,7 @@ def main(
     fmt = format.value
     for rst_file in rst_files:
         out = process_rst_file(rst_file, output_dir, fmt)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

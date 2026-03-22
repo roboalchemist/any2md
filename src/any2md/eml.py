@@ -489,15 +489,15 @@ def main(
     if suffix == '.mbox':
         written = process_mbox_file(input_path, output_dir, fmt)
         for p in written:
-            typer.echo(f"Written: {p}")
+            typer.echo(f"Written: {p}", err=True)
     elif suffix in ('.eml', '.email', ''):
         out = process_eml_file(input_path, output_dir, fmt)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
     else:
         # Try to parse as .eml anyway
         logger.warning("Unknown extension %s, treating as .eml", suffix)
         out = process_eml_file(input_path, output_dir, fmt)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

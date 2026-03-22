@@ -399,7 +399,7 @@ def main(
     fmt = format.value
     for sub_file in sub_files:
         out = process_sub_file(sub_file, output_dir, fmt)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

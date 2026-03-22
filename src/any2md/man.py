@@ -725,7 +725,7 @@ def main(
     fmt = format.value
     for man_file in man_files:
         out = process_man_file(man_file, output_dir, fmt)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

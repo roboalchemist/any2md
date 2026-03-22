@@ -557,7 +557,7 @@ def main(
         raise typer.Exit(1)
 
     out = process_data_file(input_path, output_dir, format.value, max_items)
-    typer.echo(f"Written: {out}")
+    typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

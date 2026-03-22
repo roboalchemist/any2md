@@ -440,7 +440,7 @@ def main(
 
     write_output(content, output_file)
     logger.info("Output saved to: %s", output_file)
-    typer.echo(str(output_file))
+    typer.echo(str(output_file), err=True)
 
 
 if __name__ == "__main__":

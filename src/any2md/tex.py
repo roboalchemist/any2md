@@ -758,7 +758,7 @@ def main(
     fmt = format.value
     for tex_file in tex_files:
         out = process_tex_file(tex_file, output_dir, fmt)
-        typer.echo(f"Written: {out}")
+        typer.echo(f"Written: {out}", err=True)
 
 
 if __name__ == "__main__":

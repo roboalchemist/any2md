@@ -277,7 +277,7 @@ def main(
             output_dir=output_dir_path,
             fmt=format,
         )
-        typer.echo(str(out))
+        typer.echo(str(out), err=True)
 
 
 if __name__ == "__main__":
