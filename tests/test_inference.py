@@ -23,6 +23,8 @@ Verified working with torch==2.10.0 (or later) and mlx-vlm==0.4.0.
 All models auto-download from HuggingFace Hub on first use.
 """
 
+import os
+import subprocess
 import pytest
 import sys
 import tempfile
@@ -342,3 +344,119 @@ def test_diarize_end_to_end_youtube():
     text_lines = [line for line in content.split("\n") if line.strip() and not line.startswith("---") and not line.startswith("**") and not line.startswith("#") and ":" not in line[:20]]
     total_text = " ".join(text_lines)
     assert len(total_text) > 100, "Expected substantial transcription text"
+
+
+# ---------------------------------------------------------------------------
+# Long audio diarization (streaming OOM fix)
+# ---------------------------------------------------------------------------
+
+# Longform Podcast Episode 64: Gay Talese — 82-minute interview, 3 speakers.
+# Public domain via Internet Archive. Stable URL.
+LONGFORM_PODCAST_URL = (
+    "https://archive.org/download/longform-podcast/"
+    "2013-10-17%20Episode%2064%20Gay%20Talese.mp3"
+)
+
+
+def _download_long_test_audio(output_dir: str) -> str:
+    """Download the Longform Podcast episode for long-audio testing.
+
+    Returns path to the downloaded MP3 file (~74.5 MB).
+    Skips download if already cached in tests/audio/.
+    """
+    cache_dir = Path(__file__).parent / "audio"
+    cache_path = cache_dir / "longform_ep64_gay_talese.mp3"
+
+    if cache_path.exists():
+        return str(cache_path)
+
+    # Download to output_dir first, copy to cache if tests/audio/ exists
+    dest = os.path.join(output_dir, "longform_ep64.mp3")
+    subprocess.run(
+        ["curl", "-fSL", "--connect-timeout", "10", "--max-time", "120",
+         "-o", dest, LONGFORM_PODCAST_URL],
+        check=True, capture_output=True,
+    )
+
+    # Cache for future runs if audio/ dir exists
+    if cache_dir.is_dir():
+        import shutil
+        shutil.copy2(dest, cache_path)
+
+    return dest
+
+
+@pytest.mark.slow
+def test_diarize_long_audio_streaming():
+    """Diarization on 82-minute podcast completes without OOM via streaming.
+
+    This is a regression test for the Metal memory allocation failure:
+    '[metal::malloc] Attempting to allocate 83404284800 bytes which is greater
+    than the maximum allowed buffer size of 77309411328 bytes.'
+
+    The fix uses model.generate_stream() with chunked processing instead of
+    model.generate() which tries to process the entire file at once.
+
+    Uses Longform Podcast Episode 64 (Gay Talese interview, ~82 min, 3 speakers)
+    from archive.org (public domain).
+    """
+    from any2md.yt import load_diarization_model, diarize, convert_audio_for_whisper
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            mp3_path = _download_long_test_audio(tmpdir)
+        except subprocess.CalledProcessError:
+            pytest.skip("Could not download test audio from archive.org")
+
+        file_size_mb = os.path.getsize(mp3_path) / (1024 * 1024)
+        print(f"\nTest audio: {file_size_mb:.1f} MB")
+
+        # Convert to 16kHz WAV for diarization
+        wav_path = convert_audio_for_whisper(mp3_path, tmpdir)
+
+        model = load_diarization_model(SORTFORMER_MODEL)
+        # This would OOM with model.generate() on files this long
+        output = diarize(wav_path, model)
+
+    assert output.segments is not None
+    assert len(output.segments) > 0, "Expected at least one diarization segment"
+    assert output.num_speakers >= 2, f"Expected >= 2 speakers in interview, got {output.num_speakers}"
+    assert output.total_time > 0, "Expected non-zero processing time"
+    print(f"Diarization: {len(output.segments)} segments, "
+          f"{output.num_speakers} speakers, {output.total_time:.1f}s")
+
+
+@pytest.mark.slow
+def test_diarize_long_audio_end_to_end():
+    """Full transcription + diarization pipeline on 82-minute podcast.
+
+    Tests the complete any2md yt pipeline with --diarize on long audio.
+    Verifies transcription content and multi-speaker markdown output.
+    """
+    from any2md.yt import transcribe, convert_audio_for_whisper
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            mp3_path = _download_long_test_audio(tmpdir)
+        except subprocess.CalledProcessError:
+            pytest.skip("Could not download test audio from archive.org")
+
+        wav_path = convert_audio_for_whisper(mp3_path, tmpdir)
+        metadata = {"title": "Longform Podcast - Gay Talese Interview"}
+        output_path = transcribe(
+            wav_path, PARAKEET_MODEL, output_dir=tmpdir,
+            metadata=metadata, diarize_model_name=SORTFORMER_MODEL,
+        )
+        content = Path(output_path).read_text()
+
+    # Should have YAML frontmatter with speaker count
+    assert content.startswith("---"), "Output must start with YAML frontmatter"
+    assert "speakers:" in content
+
+    # Should have multiple speakers
+    speaker_labels = [line for line in content.split("\n") if "SPEAKER_" in line]
+    assert len(speaker_labels) >= 10, f"Expected many speaker turns, got {len(speaker_labels)}"
+
+    # Should have substantial transcription
+    assert len(content) > 5000, f"Expected substantial content for 82-min audio, got {len(content)} chars"
+    print(f"Output: {len(content)} chars, {len(speaker_labels)} speaker turns")

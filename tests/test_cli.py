@@ -4,6 +4,8 @@ import subprocess
 import sys
 import unittest
 
+from any2md import __version__
+
 
 class TestVersionFlag(unittest.TestCase):
     """Test --version and -V flags."""
@@ -18,7 +20,7 @@ class TestVersionFlag(unittest.TestCase):
     def test_version_flag_stdout(self):
         result = self._run("--version")
         self.assertIn("any2md", result.stdout)
-        self.assertIn("0.1.0", result.stdout)
+        self.assertIn(__version__, result.stdout)
         self.assertIn("Copyright", result.stdout)
         self.assertIn("MIT", result.stdout)
 
@@ -29,7 +31,7 @@ class TestVersionFlag(unittest.TestCase):
     def test_short_version_flag_stdout(self):
         result = self._run("-V")
         self.assertIn("any2md", result.stdout)
-        self.assertIn("0.1.0", result.stdout)
+        self.assertIn(__version__, result.stdout)
 
     def test_short_version_flag_exit_code(self):
         result = self._run("-V")

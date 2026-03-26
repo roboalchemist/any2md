@@ -22,6 +22,7 @@ from any2md.yt import (
     segments_to_srt_diarized,
     segments_to_text_diarized,
     align_speakers,
+    _merge_diarization_segments,
     build_frontmatter,
     resolve_model,
     MODEL_ALIASES,
@@ -366,6 +367,122 @@ class TestDiarization(unittest.TestCase):
         metadata = {"title": "Test", "speakers": 2}
         result = build_frontmatter(metadata)
         self.assertIn("speakers: 2", result)
+
+
+class TestMergeDiarizationSegments(unittest.TestCase):
+    """Test cases for _merge_diarization_segments()."""
+
+    def test_empty_input(self):
+        """Empty list returns empty list."""
+        self.assertEqual(_merge_diarization_segments([]), [])
+
+    def test_single_segment(self):
+        """Single segment passes through unchanged."""
+        segs = [FakeDiarizationSegment(0.0, 5.0, 0)]
+        result = _merge_diarization_segments(segs)
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0].start, 0.0)
+        self.assertAlmostEqual(result[0].end, 5.0)
+        self.assertEqual(result[0].speaker, 0)
+
+    def test_merges_same_speaker_within_gap(self):
+        """Adjacent segments from same speaker with small gap get merged."""
+        segs = [
+            FakeDiarizationSegment(0.0, 5.0, 0),
+            FakeDiarizationSegment(5.1, 10.0, 0),  # 0.1s gap < default 0.3s
+        ]
+        result = _merge_diarization_segments(segs)
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0].start, 0.0)
+        self.assertAlmostEqual(result[0].end, 10.0)
+        self.assertEqual(result[0].speaker, 0)
+
+    def test_no_merge_different_speakers(self):
+        """Adjacent segments from different speakers stay separate."""
+        segs = [
+            FakeDiarizationSegment(0.0, 5.0, 0),
+            FakeDiarizationSegment(5.0, 10.0, 1),
+        ]
+        result = _merge_diarization_segments(segs)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].speaker, 0)
+        self.assertEqual(result[1].speaker, 1)
+
+    def test_no_merge_same_speaker_large_gap(self):
+        """Same speaker but gap > merge_gap stays separate."""
+        segs = [
+            FakeDiarizationSegment(0.0, 5.0, 0),
+            FakeDiarizationSegment(6.0, 10.0, 0),  # 1.0s gap > default 0.3s
+        ]
+        result = _merge_diarization_segments(segs)
+        self.assertEqual(len(result), 2)
+
+    def test_sorts_by_start_time(self):
+        """Out-of-order segments get sorted before merging."""
+        segs = [
+            FakeDiarizationSegment(5.0, 10.0, 1),
+            FakeDiarizationSegment(0.0, 5.0, 0),
+        ]
+        result = _merge_diarization_segments(segs)
+        self.assertEqual(len(result), 2)
+        self.assertAlmostEqual(result[0].start, 0.0)
+        self.assertEqual(result[0].speaker, 0)
+        self.assertAlmostEqual(result[1].start, 5.0)
+        self.assertEqual(result[1].speaker, 1)
+
+    def test_custom_merge_gap(self):
+        """Custom merge_gap threshold is respected."""
+        segs = [
+            FakeDiarizationSegment(0.0, 5.0, 0),
+            FakeDiarizationSegment(5.5, 10.0, 0),  # 0.5s gap
+        ]
+        # Default 0.3s — should NOT merge
+        result = _merge_diarization_segments(segs, merge_gap=0.3)
+        self.assertEqual(len(result), 2)
+        # Custom 1.0s — should merge
+        result = _merge_diarization_segments(segs, merge_gap=1.0)
+        self.assertEqual(len(result), 1)
+
+    def test_multi_chunk_boundary_merge(self):
+        """Simulates chunk boundary: speaker continues across chunks."""
+        # Chunk 1 ends at 10s, chunk 2 starts at 10s
+        segs = [
+            FakeDiarizationSegment(0.0, 5.0, 0),
+            FakeDiarizationSegment(5.0, 10.0, 1),
+            FakeDiarizationSegment(10.0, 15.0, 1),  # same speaker continues
+            FakeDiarizationSegment(15.0, 20.0, 0),
+        ]
+        result = _merge_diarization_segments(segs)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0].speaker, 0)
+        self.assertAlmostEqual(result[0].end, 5.0)
+        self.assertEqual(result[1].speaker, 1)
+        self.assertAlmostEqual(result[1].start, 5.0)
+        self.assertAlmostEqual(result[1].end, 15.0)  # merged
+        self.assertEqual(result[2].speaker, 0)
+
+    def test_diarize_uses_streaming(self):
+        """diarize() calls generate_stream, not generate."""
+        from unittest.mock import MagicMock
+
+        from any2md.yt import diarize
+
+        mock_model = MagicMock()
+        # Simulate generate_stream yielding two chunk results
+        chunk1 = MagicMock()
+        chunk1.segments = [FakeDiarizationSegment(0.0, 5.0, 0)]
+        chunk2 = MagicMock()
+        chunk2.segments = [FakeDiarizationSegment(5.0, 10.0, 1)]
+        mock_model.generate_stream.return_value = iter([chunk1, chunk2])
+
+        result = diarize("/fake/audio.wav", mock_model)
+
+        # Verify generate_stream was called (not generate)
+        mock_model.generate_stream.assert_called_once()
+        mock_model.generate.assert_not_called()
+        # Verify result has merged segments from both chunks
+        self.assertEqual(result.num_speakers, 2)
+        self.assertEqual(len(result.segments), 2)
 
 
 if __name__ == "__main__":

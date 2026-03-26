@@ -387,6 +387,7 @@ def segments_to_markdown(sentences: List, title: Optional[str] = None,
 
 
 DEFAULT_DIARIZE_MODEL = "mlx-community/diar_sortformer_4spk-v1-fp32"
+DEFAULT_DIARIZE_CHUNK_DURATION = 10.0  # seconds per chunk for streaming diarization
 
 
 def load_diarization_model(model_name: str = DEFAULT_DIARIZE_MODEL):
@@ -400,13 +401,80 @@ def load_diarization_model(model_name: str = DEFAULT_DIARIZE_MODEL):
     return load(model_name)
 
 
-def diarize(audio_path: str, model):
-    """Run speaker diarization on audio file. Returns DiarizationOutput."""
-    logger.info("Running diarization on: %s", audio_path)
+def diarize(audio_path: str, model, chunk_duration: float = DEFAULT_DIARIZE_CHUNK_DURATION):
+    """Run speaker diarization on audio file using streaming to avoid OOM.
+
+    Uses generate_stream() to process audio in chunks, avoiding Metal memory
+    allocation failures on long audio files. Collects all chunk results and
+    merges segments across chunk boundaries.
+
+    Args:
+        audio_path: Path to the audio file.
+        model: Loaded Sortformer diarization model.
+        chunk_duration: Duration of each chunk in seconds (default: 10.0).
+
+    Returns:
+        DiarizationOutput with merged speaker segments.
+    """
+    logger.info("Running diarization on: %s (chunk_duration=%.1fs)", audio_path, chunk_duration)
     start = time.time()
-    result = model.generate(audio_path)
-    logger.info("Diarization completed in %.2f seconds", time.time() - start)
-    return result
+
+    all_segments = []
+    num_chunks = 0
+    for chunk_result in model.generate_stream(audio_path, chunk_duration=chunk_duration):
+        all_segments.extend(chunk_result.segments)
+        num_chunks += 1
+
+    # Merge adjacent segments from the same speaker across chunk boundaries
+    merged = _merge_diarization_segments(all_segments)
+    num_speakers = len({s.speaker for s in merged})
+
+    elapsed = time.time() - start
+    logger.info(
+        "Diarization completed in %.2f seconds (%d chunks, %d segments, %d speakers)",
+        elapsed, num_chunks, len(merged), num_speakers,
+    )
+
+    # Import here to avoid top-level dependency
+    from mlx_audio.vad.models.sortformer.sortformer import DiarizationOutput
+
+    return DiarizationOutput(
+        segments=merged,
+        num_speakers=num_speakers,
+        total_time=elapsed,
+    )
+
+
+def _merge_diarization_segments(segments, merge_gap: float = 0.3):
+    """Merge adjacent diarization segments from the same speaker.
+
+    Streaming chunks may produce back-to-back segments from the same speaker
+    at chunk boundaries. This merges them if the gap is small enough.
+
+    Args:
+        segments: List of DiarizationSegment objects.
+        merge_gap: Maximum gap (seconds) between segments to merge.
+
+    Returns:
+        List of merged DiarizationSegment objects.
+    """
+    if not segments:
+        return []
+
+    from mlx_audio.vad.models.sortformer.sortformer import DiarizationSegment
+
+    # Sort by start time to handle interleaved chunk results
+    sorted_segs = sorted(segments, key=lambda s: s.start)
+
+    merged = [DiarizationSegment(start=sorted_segs[0].start, end=sorted_segs[0].end, speaker=sorted_segs[0].speaker)]
+    for seg in sorted_segs[1:]:
+        prev = merged[-1]
+        if seg.speaker == prev.speaker and (seg.start - prev.end) <= merge_gap:
+            merged[-1] = DiarizationSegment(start=prev.start, end=max(prev.end, seg.end), speaker=prev.speaker)
+        else:
+            merged.append(DiarizationSegment(start=seg.start, end=seg.end, speaker=seg.speaker))
+
+    return merged
 
 
 def align_speakers(transcription_segments: List, diarization_segments: List) -> List[Dict]:
