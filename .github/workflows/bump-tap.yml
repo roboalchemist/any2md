@@ -1,0 +1,38 @@
+name: Bump Homebrew Tap
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute tarball sha256
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          TARBALL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG_NAME}.tar.gz"
+          curl -sL "$TARBALL" -o release.tgz
+          echo "SHA256=$(sha256sum release.tgz | awk '{print $1}')" >> $GITHUB_ENV
+          echo "TAG=${TAG_NAME}" >> $GITHUB_ENV
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -e
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git clone "https://${GH_TOKEN}@github.com/roboalchemist/homebrew-tap.git"
+          cd homebrew-tap
+          sed -i "s|url \"[^\"]*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz\"|" Formula/any2md.rb
+          sed -i "s|sha256 \"[0-9a-f]*\"|sha256 \"${SHA256}\"|" Formula/any2md.rb
+          git add Formula/any2md.rb
+          git commit -m "any2md: bump to ${TAG}"
+          git push origin main
