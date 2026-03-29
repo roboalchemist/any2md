@@ -1142,14 +1142,28 @@ def identify_speakers(
 
         if avg_embedding is None:
             logger.warning("No valid embeddings for speaker %s — skipping identification", label)
-            speaker_map[label] = {"name": label, "matched": False, "distance": None, "high_conf": False}
+            speaker_map[label] = {
+                "name": label,
+                "matched": False,
+                "distance": None,
+                "high_conf": False,
+                "avg_embedding": None,
+                "segments": [{"start": s.get("start"), "end": s.get("end")} for s in spk_segs],
+            }
             continue
 
         # Query catalog for best match using low_conf_threshold as outer gate
         match = match_speaker(conn, avg_embedding, threshold=low_conf_threshold)
 
         if match is None:
-            speaker_map[label] = {"name": label, "matched": False, "distance": None, "high_conf": False}
+            speaker_map[label] = {
+                "name": label,
+                "matched": False,
+                "distance": None,
+                "high_conf": False,
+                "avg_embedding": avg_embedding,
+                "segments": [{"start": s.get("start"), "end": s.get("end")} for s in spk_segs],
+            }
             logger.debug("No catalog match for speaker %s", label)
             continue
 
@@ -1236,6 +1250,35 @@ def _compute_weighted_avg_embedding(segments: List[Dict]) -> Optional[np.ndarray
 
     avg = (weighted_sum / total_weight).astype(np.float32)
     return _l2_normalize(avg)
+
+
+# ---------------------------------------------------------------------------
+# Auto-enrollment helpers
+# ---------------------------------------------------------------------------
+
+
+def _next_unknown_name(conn: sqlite3.Connection) -> str:
+    """Return the next available Unknown_N name for auto-enrollment.
+
+    Queries the catalog for existing ``Unknown_<int>`` names and returns
+    ``Unknown_<max+1>`` (or ``Unknown_0`` if none exist).
+
+    Args:
+        conn: Open catalog connection.
+
+    Returns:
+        A name string like ``Unknown_0``, ``Unknown_1``, etc.
+    """
+    rows = conn.execute(
+        "SELECT name FROM speakers WHERE name LIKE 'Unknown_%'"
+    ).fetchall()
+    max_n = -1
+    for row in rows:
+        name = row[0] if isinstance(row, (list, tuple)) else row["name"]
+        suffix = name[len("Unknown_"):]
+        if suffix.isdigit():
+            max_n = max(max_n, int(suffix))
+    return f"Unknown_{max_n + 1}"
 
 
 # ---------------------------------------------------------------------------

@@ -602,5 +602,522 @@ class TestDiarizedFormattersWithSpeakerMap(unittest.TestCase):
         self.assertIn("SPEAKER_SPEAKER_1:", result)
 
 
+# ---------------------------------------------------------------------------
+# Tests for enrollment prompt logic in transcribe()
+# ---------------------------------------------------------------------------
+
+
+import numpy as _np
+import tempfile
+
+
+def _make_rand_emb(seed: int = 0) -> _np.ndarray:
+    """Return a random L2-normalized 256-d float32 embedding for tests."""
+    rng = _np.random.default_rng(seed)
+    v = rng.standard_normal(256).astype(_np.float32)
+    return v / _np.linalg.norm(v)
+
+
+def _make_fake_transcribe_result():
+    """Return a MagicMock that mimics mlx-audio transcribe result."""
+    from unittest.mock import MagicMock
+    result = MagicMock()
+    result.sentences = [FakeAlignedSentence(0.0, 5.0, "hello world")]
+    return result
+
+
+def _make_speaker_map_with_unmatched(label: str = "SPEAKER_0", emb_seed: int = 42):
+    """Build a speaker_map dict where label is unmatched (like identify_speakers() returns)."""
+    emb = _make_rand_emb(emb_seed)
+    return {
+        label: {
+            "name": label,
+            "matched": False,
+            "distance": None,
+            "high_conf": False,
+            "avg_embedding": emb,
+            "segments": [{"start": 0.0, "end": 3.0}],
+        }
+    }
+
+
+class TestTranscribeEnrollmentLogic(unittest.TestCase):
+    """Test enrollment prompt/auto-enroll logic in transcribe().
+
+    All heavy deps (mlx-audio, speaker catalog) are mocked so tests run
+    without any models installed.
+    """
+
+    def _make_fake_mlx_model(self):
+        """Return a mock mlx-audio model."""
+        from unittest.mock import MagicMock
+        model = MagicMock()
+        model.generate.return_value = _make_fake_transcribe_result()
+        return model
+
+    def _patch_load(self, mock_model):
+        """Return a patcher for mlx_audio.stt.load."""
+        from unittest.mock import patch
+        return patch("mlx_audio.stt.load", return_value=mock_model)
+
+    def _run_transcribe(self, tmpdir, speaker_map, auto_enroll=False,
+                        no_enroll=False, is_tty=False, prompt_return="",
+                        _unmatched_out=None, is_json_mode_val=False):
+        """Helper to run transcribe() with all deps mocked.
+
+        Returns the path of the written output file.
+        """
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        import io
+
+        audio_path = tmpdir + "/test.wav"
+        open(audio_path, "w").close()
+
+        fake_model = self._make_fake_mlx_model()
+
+        mock_add_speaker = MagicMock(return_value="fake-speaker-id")
+        mock_enroll = MagicMock(return_value="fake-enrollment-id")
+        mock_open_catalog = MagicMock(return_value=MagicMock())
+        mock_close_catalog = MagicMock()
+        mock_next_unknown = MagicMock(side_effect=["Unknown_0", "Unknown_1", "Unknown_2"])
+        mock_identify = MagicMock(return_value=speaker_map)
+
+        # Patch all the speaker module symbols imported inside transcribe()
+        speaker_patches = {
+            "any2md.yt.identify_speakers": mock_identify,
+            "any2md.yt.open_catalog": mock_open_catalog,
+            "any2md.yt.close_catalog": mock_close_catalog,
+            "any2md.yt.add_speaker": mock_add_speaker,
+            "any2md.yt.enroll": mock_enroll,
+            "any2md.yt._next_unknown_name": mock_next_unknown,
+        }
+
+        with self._patch_load(fake_model), \
+             patch("any2md.yt.is_json_mode", return_value=is_json_mode_val), \
+             patch("sys.stdout.isatty", return_value=is_tty), \
+             patch("typer.prompt", return_value=prompt_return), \
+             patch("any2md.yt.identify_speakers", mock_identify), \
+             patch("any2md.yt.open_catalog", mock_open_catalog), \
+             patch("any2md.yt.close_catalog", mock_close_catalog), \
+             patch("any2md.yt.add_speaker", mock_add_speaker), \
+             patch("any2md.yt.enroll", mock_enroll), \
+             patch("any2md.yt._next_unknown_name", mock_next_unknown):
+            result = transcribe(
+                audio_path,
+                output_dir=tmpdir,
+                diarize_model_name=None,  # no diarization in these tests
+                identify=False,  # identify is handled via mocked speaker_map
+                auto_enroll=auto_enroll,
+                no_enroll=no_enroll,
+                _unmatched_out=_unmatched_out,
+            )
+
+        return result, mock_add_speaker, mock_enroll, mock_next_unknown
+
+    def _apply_speaker_patches(self, stack, speaker_map, mock_add_speaker=None,
+                                mock_enroll=None, mock_next_unknown=None,
+                                mock_open_catalog=None, mock_close_catalog=None):
+        """Enter all speaker module patches into an ExitStack.
+
+        Since these symbols are imported inside transcribe() with
+        'from any2md.speaker import ...', patching must happen at the
+        any2md.speaker module level.
+
+        Returns (mock_add_speaker, mock_enroll, mock_next_unknown).
+        """
+        from unittest.mock import patch, MagicMock
+
+        if mock_add_speaker is None:
+            mock_add_speaker = MagicMock(return_value="fake-sp-id")
+        if mock_enroll is None:
+            mock_enroll = MagicMock(return_value="fake-enr-id")
+        if mock_next_unknown is None:
+            mock_next_unknown = MagicMock(return_value="Unknown_0")
+        if mock_open_catalog is None:
+            mock_open_catalog = MagicMock(return_value=MagicMock())
+        if mock_close_catalog is None:
+            mock_close_catalog = MagicMock()
+
+        stack.enter_context(patch("any2md.speaker.identify_speakers", return_value=speaker_map))
+        stack.enter_context(patch("any2md.speaker.open_catalog", mock_open_catalog))
+        stack.enter_context(patch("any2md.speaker.close_catalog", mock_close_catalog))
+        stack.enter_context(patch("any2md.speaker.add_speaker", mock_add_speaker))
+        stack.enter_context(patch("any2md.speaker.enroll", mock_enroll))
+        stack.enter_context(patch("any2md.speaker._next_unknown_name", mock_next_unknown))
+        return mock_add_speaker, mock_enroll, mock_next_unknown
+
+    def _apply_diarize_patches(self, stack, diarized_segments=None):
+        """Mock diarization model loading and diarize() to avoid network/model calls."""
+        from unittest.mock import patch, MagicMock
+
+        if diarized_segments is None:
+            diarized_segments = [
+                {"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hello"},
+            ]
+
+        mock_diar_model = MagicMock()
+        mock_diar_output = MagicMock()
+        mock_diar_output.num_speakers = 1
+        mock_diar_output.segments = []
+
+        stack.enter_context(patch("any2md.yt.load_diarization_model", return_value=mock_diar_model))
+        stack.enter_context(patch("any2md.yt.diarize", return_value=mock_diar_output))
+        stack.enter_context(patch("any2md.yt.align_speakers", return_value=diarized_segments))
+
+        # Also mock speaker embedding extraction (load_speaker_model, extract_embeddings_for_segments)
+        mock_spk_model = MagicMock()
+        stack.enter_context(patch("any2md.speaker.load_speaker_model", return_value=mock_spk_model))
+        stack.enter_context(
+            patch("any2md.speaker.extract_embeddings_for_segments", side_effect=lambda m, p, s: s)
+        )
+        return diarized_segments
+
+    def test_no_enroll_skips_prompts(self):
+        """--no-enroll: unmatched speakers are left as SPEAKER_N, no prompts shown."""
+        import contextlib
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = tmpdir + "/test.wav"
+            open(audio_path, "w").close()
+
+            fake_model = self._make_fake_mlx_model()
+            mock_add_speaker = MagicMock(return_value="fake-id")
+            mock_enroll = MagicMock()
+            mock_prompt = MagicMock()
+
+            diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi",
+                         "embedding": _make_rand_emb(1)}]
+            speaker_map = _make_speaker_map_with_unmatched("SPEAKER_0")
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self._patch_load(fake_model))
+                self._apply_diarize_patches(stack, diarized_segments=diarized)
+                self._apply_speaker_patches(
+                    stack, speaker_map,
+                    mock_add_speaker=mock_add_speaker, mock_enroll=mock_enroll
+                )
+                stack.enter_context(patch("typer.prompt", mock_prompt))
+                stack.enter_context(patch("sys.stdout.isatty", return_value=True))
+                transcribe(
+                    audio_path,
+                    output_dir=tmpdir,
+                    diarize_model_name="fake-model",
+                    identify=True,
+                    no_enroll=True,
+                )
+
+            # no_enroll=True: no prompts, no enrollment
+            mock_prompt.assert_not_called()
+            mock_add_speaker.assert_not_called()
+            mock_enroll.assert_not_called()
+
+    def test_auto_enroll_enrolls_unmatched_as_unknown_n(self):
+        """--auto-enroll: unmatched speakers are enrolled as Unknown_N without prompting."""
+        import contextlib
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = tmpdir + "/test.wav"
+            open(audio_path, "w").close()
+
+            fake_model = self._make_fake_mlx_model()
+            mock_add_speaker = MagicMock(return_value="fake-id")
+            mock_enroll = MagicMock(return_value="fake-enrollment")
+            mock_prompt = MagicMock()
+            mock_next_unknown = MagicMock(return_value="Unknown_0")
+
+            diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi",
+                         "embedding": _make_rand_emb(2)}]
+            speaker_map = _make_speaker_map_with_unmatched("SPEAKER_0")
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self._patch_load(fake_model))
+                self._apply_diarize_patches(stack, diarized_segments=diarized)
+                self._apply_speaker_patches(
+                    stack, speaker_map,
+                    mock_add_speaker=mock_add_speaker,
+                    mock_enroll=mock_enroll,
+                    mock_next_unknown=mock_next_unknown,
+                )
+                stack.enter_context(patch("typer.prompt", mock_prompt))
+                stack.enter_context(patch("sys.stdout.isatty", return_value=False))
+                transcribe(
+                    audio_path,
+                    output_dir=tmpdir,
+                    diarize_model_name="fake-model",
+                    identify=True,
+                    auto_enroll=True,
+                )
+
+            # auto_enroll=True: no prompts, but enrollment happens
+            mock_prompt.assert_not_called()
+            mock_next_unknown.assert_called_once()
+            mock_add_speaker.assert_called_once()
+            mock_enroll.assert_called_once()
+
+    def test_auto_enroll_updates_speaker_map_name(self):
+        """--auto-enroll: speaker_map entry name is updated to Unknown_N after enrollment."""
+        import contextlib
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = tmpdir + "/test.wav"
+            open(audio_path, "w").close()
+
+            fake_model = self._make_fake_mlx_model()
+            diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi",
+                         "embedding": _make_rand_emb(3)}]
+            speaker_map = _make_speaker_map_with_unmatched("SPEAKER_0")
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self._patch_load(fake_model))
+                self._apply_diarize_patches(stack, diarized_segments=diarized)
+                self._apply_speaker_patches(
+                    stack, speaker_map,
+                    mock_add_speaker=MagicMock(return_value="sp-id"),
+                    mock_enroll=MagicMock(return_value="enr-id"),
+                    mock_next_unknown=MagicMock(return_value="Unknown_0"),
+                )
+                stack.enter_context(patch("typer.prompt"))
+                stack.enter_context(patch("sys.stdout.isatty", return_value=False))
+                transcribe(
+                    audio_path,
+                    output_dir=tmpdir,
+                    diarize_model_name="fake-model",
+                    identify=True,
+                    auto_enroll=True,
+                )
+
+            # speaker_map entry should be updated in-place
+            self.assertEqual(speaker_map["SPEAKER_0"]["name"], "Unknown_0")
+            self.assertTrue(speaker_map["SPEAKER_0"]["matched"])
+
+    def test_interactive_prompt_with_name_enrolls(self):
+        """TTY mode with name entered: speaker is enrolled and map updated."""
+        import contextlib
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = tmpdir + "/test.wav"
+            open(audio_path, "w").close()
+
+            fake_model = self._make_fake_mlx_model()
+            diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi",
+                         "embedding": _make_rand_emb(4)}]
+            speaker_map = _make_speaker_map_with_unmatched("SPEAKER_0")
+            mock_add_speaker = MagicMock(return_value="sp-id")
+            mock_enroll = MagicMock(return_value="enr-id")
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self._patch_load(fake_model))
+                self._apply_diarize_patches(stack, diarized_segments=diarized)
+                self._apply_speaker_patches(
+                    stack, speaker_map,
+                    mock_add_speaker=mock_add_speaker, mock_enroll=mock_enroll
+                )
+                stack.enter_context(patch("typer.prompt", return_value="Alice"))
+                stack.enter_context(patch("any2md.yt.is_json_mode", return_value=False))
+                stack.enter_context(patch("sys.stdout.isatty", return_value=True))
+                transcribe(
+                    audio_path,
+                    output_dir=tmpdir,
+                    diarize_model_name="fake-model",
+                    identify=True,
+                )
+
+            mock_add_speaker.assert_called_once()
+            call_args = mock_add_speaker.call_args
+            # Second argument to add_speaker should be "Alice" (conn is first)
+            self.assertEqual(call_args[0][1], "Alice")
+            mock_enroll.assert_called_once()
+            self.assertEqual(speaker_map["SPEAKER_0"]["name"], "Alice")
+            self.assertTrue(speaker_map["SPEAKER_0"]["matched"])
+
+    def test_interactive_prompt_enter_skip_does_not_enroll(self):
+        """TTY mode with Enter pressed (empty): speaker is NOT enrolled."""
+        import contextlib
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = tmpdir + "/test.wav"
+            open(audio_path, "w").close()
+
+            fake_model = self._make_fake_mlx_model()
+            diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi",
+                         "embedding": _make_rand_emb(5)}]
+            speaker_map = _make_speaker_map_with_unmatched("SPEAKER_0")
+            mock_add_speaker = MagicMock(return_value="sp-id")
+            mock_enroll = MagicMock()
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self._patch_load(fake_model))
+                self._apply_diarize_patches(stack, diarized_segments=diarized)
+                self._apply_speaker_patches(
+                    stack, speaker_map,
+                    mock_add_speaker=mock_add_speaker, mock_enroll=mock_enroll
+                )
+                stack.enter_context(patch("typer.prompt", return_value=""))
+                stack.enter_context(patch("any2md.yt.is_json_mode", return_value=False))
+                stack.enter_context(patch("sys.stdout.isatty", return_value=True))
+                transcribe(
+                    audio_path,
+                    output_dir=tmpdir,
+                    diarize_model_name="fake-model",
+                    identify=True,
+                )
+
+            mock_add_speaker.assert_not_called()
+            mock_enroll.assert_not_called()
+            # Name stays as original label
+            self.assertEqual(speaker_map["SPEAKER_0"]["name"], "SPEAKER_0")
+            self.assertFalse(speaker_map["SPEAKER_0"]["matched"])
+
+    def test_non_tty_no_prompt_no_enroll(self):
+        """Non-TTY, no auto_enroll, no --json: silently leave SPEAKER_N, no prompt."""
+        import contextlib
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = tmpdir + "/test.wav"
+            open(audio_path, "w").close()
+
+            fake_model = self._make_fake_mlx_model()
+            diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi",
+                         "embedding": _make_rand_emb(6)}]
+            speaker_map = _make_speaker_map_with_unmatched("SPEAKER_0")
+            mock_add_speaker = MagicMock()
+            mock_enroll = MagicMock()
+            mock_prompt = MagicMock()
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self._patch_load(fake_model))
+                self._apply_diarize_patches(stack, diarized_segments=diarized)
+                self._apply_speaker_patches(
+                    stack, speaker_map,
+                    mock_add_speaker=mock_add_speaker, mock_enroll=mock_enroll
+                )
+                stack.enter_context(patch("typer.prompt", mock_prompt))
+                stack.enter_context(patch("any2md.yt.is_json_mode", return_value=False))
+                stack.enter_context(patch("sys.stdout.isatty", return_value=False))
+                transcribe(
+                    audio_path,
+                    output_dir=tmpdir,
+                    diarize_model_name="fake-model",
+                    identify=True,
+                )
+
+            # No TTY, no auto_enroll, not json: silent passthrough
+            mock_prompt.assert_not_called()
+            mock_add_speaker.assert_not_called()
+            mock_enroll.assert_not_called()
+            self.assertFalse(speaker_map["SPEAKER_0"]["matched"])
+
+    def test_json_mode_unmatched_out_populated(self):
+        """JSON mode: unmatched_out list is populated with label/embedding/segments."""
+        import contextlib
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = tmpdir + "/test.wav"
+            open(audio_path, "w").close()
+
+            fake_model = self._make_fake_mlx_model()
+            emb = _make_rand_emb(200)
+            diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi",
+                         "embedding": emb}]
+            speaker_map = {
+                "SPEAKER_0": {
+                    "name": "SPEAKER_0",
+                    "matched": False,
+                    "distance": None,
+                    "high_conf": False,
+                    "avg_embedding": emb,
+                    "segments": [{"start": 0.0, "end": 3.0}],
+                }
+            }
+            unmatched_out: list = []
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self._patch_load(fake_model))
+                self._apply_diarize_patches(stack, diarized_segments=diarized)
+                self._apply_speaker_patches(stack, speaker_map)
+                stack.enter_context(patch("typer.prompt", return_value=""))
+                stack.enter_context(patch("any2md.yt.is_json_mode", return_value=True))
+                stack.enter_context(patch("sys.stdout.isatty", return_value=False))
+                transcribe(
+                    audio_path,
+                    output_dir=tmpdir,
+                    diarize_model_name="fake-model",
+                    identify=True,
+                    _unmatched_out=unmatched_out,
+                )
+
+            # unmatched_out should have one entry for SPEAKER_0
+            self.assertEqual(len(unmatched_out), 1)
+            entry = unmatched_out[0]
+            self.assertEqual(entry["label"], "SPEAKER_0")
+            self.assertIsNotNone(entry["embedding"])
+            self.assertIsInstance(entry["embedding"], list)
+            self.assertEqual(len(entry["embedding"]), 256)
+            self.assertEqual(entry["segments"], [{"start": 0.0, "end": 3.0}])
+
+    def test_auto_enroll_skips_speaker_with_no_embedding(self):
+        """auto_enroll skips speakers with avg_embedding=None (no segments had embeddings)."""
+        import contextlib
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import transcribe
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = tmpdir + "/test.wav"
+            open(audio_path, "w").close()
+
+            fake_model = self._make_fake_mlx_model()
+            diarized = [{"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi"}]
+            speaker_map = {
+                "SPEAKER_0": {
+                    "name": "SPEAKER_0",
+                    "matched": False,
+                    "distance": None,
+                    "high_conf": False,
+                    "avg_embedding": None,  # No embedding available
+                    "segments": [],
+                }
+            }
+            mock_add_speaker = MagicMock(return_value="sp-id")
+            mock_enroll = MagicMock()
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(self._patch_load(fake_model))
+                self._apply_diarize_patches(stack, diarized_segments=diarized)
+                self._apply_speaker_patches(
+                    stack, speaker_map,
+                    mock_add_speaker=mock_add_speaker, mock_enroll=mock_enroll
+                )
+                stack.enter_context(patch("typer.prompt"))
+                stack.enter_context(patch("any2md.yt.is_json_mode", return_value=False))
+                stack.enter_context(patch("sys.stdout.isatty", return_value=False))
+                transcribe(
+                    audio_path,
+                    output_dir=tmpdir,
+                    diarize_model_name="fake-model",
+                    identify=True,
+                    auto_enroll=True,
+                )
+
+            # avg_embedding is None — should skip enrollment
+            mock_add_speaker.assert_not_called()
+            mock_enroll.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

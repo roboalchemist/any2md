@@ -1250,5 +1250,118 @@ class TestIdentifySpeakers(unittest.TestCase):
             self.assertFalse(result["SPEAKER_0"]["high_conf"])
 
 
+# ---------------------------------------------------------------------------
+# Tests for _next_unknown_name
+# ---------------------------------------------------------------------------
+
+
+class TestNextUnknownName(unittest.TestCase):
+
+    def test_returns_unknown_0_when_catalog_empty(self):
+        from any2md.speaker import _next_unknown_name
+        conn = _open_test_catalog()
+        result = _next_unknown_name(conn)
+        self.assertEqual(result, "Unknown_0")
+
+    def test_increments_from_existing_unknown(self):
+        from any2md.speaker import _next_unknown_name, add_speaker
+        conn = _open_test_catalog()
+        add_speaker(conn, "Unknown_0")
+        result = _next_unknown_name(conn)
+        self.assertEqual(result, "Unknown_1")
+
+    def test_increments_from_highest_existing(self):
+        from any2md.speaker import _next_unknown_name, add_speaker
+        conn = _open_test_catalog()
+        add_speaker(conn, "Unknown_0")
+        add_speaker(conn, "Unknown_3")
+        add_speaker(conn, "Unknown_1")
+        result = _next_unknown_name(conn)
+        self.assertEqual(result, "Unknown_4")
+
+    def test_ignores_non_numeric_suffixes(self):
+        """Unknown_X where X is not an integer should not affect counter."""
+        from any2md.speaker import _next_unknown_name, add_speaker
+        conn = _open_test_catalog()
+        add_speaker(conn, "Unknown_abc")
+        result = _next_unknown_name(conn)
+        self.assertEqual(result, "Unknown_0")
+
+    def test_ignores_unrelated_speaker_names(self):
+        from any2md.speaker import _next_unknown_name, add_speaker
+        conn = _open_test_catalog()
+        add_speaker(conn, "Alice")
+        add_speaker(conn, "Bob")
+        result = _next_unknown_name(conn)
+        self.assertEqual(result, "Unknown_0")
+
+
+# ---------------------------------------------------------------------------
+# Tests for identify_speakers: avg_embedding and segments in unmatched entries
+# ---------------------------------------------------------------------------
+
+
+class TestIdentifyUnmatchedHasEmbedding(unittest.TestCase):
+    """Unmatched entries from identify_speakers() should include avg_embedding and segments."""
+
+    def test_unmatched_entry_has_avg_embedding(self):
+        from any2md.speaker import identify_speakers
+        conn = _open_test_catalog()  # Empty catalog
+        emb = _rand_emb(100)
+        segments = [
+            {"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hello", "embedding": emb},
+        ]
+        result = identify_speakers(conn, segments, "/fake/audio.wav")
+        self.assertFalse(result["SPEAKER_0"]["matched"])
+        self.assertIn("avg_embedding", result["SPEAKER_0"])
+        avg_emb = result["SPEAKER_0"]["avg_embedding"]
+        self.assertIsNotNone(avg_emb)
+        self.assertEqual(avg_emb.shape, (256,))
+
+    def test_unmatched_entry_has_segments(self):
+        from any2md.speaker import identify_speakers
+        conn = _open_test_catalog()
+        emb = _rand_emb(101)
+        segments = [
+            {"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hello", "embedding": emb},
+            {"start": 4.0, "end": 7.0, "speaker": "SPEAKER_0", "text": "world", "embedding": emb},
+        ]
+        result = identify_speakers(conn, segments, "/fake/audio.wav")
+        self.assertFalse(result["SPEAKER_0"]["matched"])
+        segs = result["SPEAKER_0"]["segments"]
+        self.assertEqual(len(segs), 2)
+        self.assertEqual(segs[0]["start"], 0.0)
+        self.assertEqual(segs[1]["start"], 4.0)
+
+    def test_no_embedding_unmatched_has_none_avg_embedding(self):
+        """Segments without 'embedding' key → avg_embedding should be None."""
+        from any2md.speaker import identify_speakers
+        conn = _open_test_catalog()
+        segments = [
+            {"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hello"},
+        ]
+        result = identify_speakers(conn, segments, "/fake/audio.wav")
+        self.assertFalse(result["SPEAKER_0"]["matched"])
+        self.assertIsNone(result["SPEAKER_0"]["avg_embedding"])
+
+    def test_matched_entry_does_not_require_avg_embedding_key(self):
+        """Matched entries don't need avg_embedding — only unmatched do."""
+        from any2md.speaker import identify_speakers
+        conn = _open_test_catalog()
+        from any2md.speaker import add_speaker, enroll
+        speaker_id = add_speaker(conn, "Alice")
+        ref = _rand_emb(102)
+        enroll(conn, speaker_id, ref)
+        segments = [
+            {"start": 0.0, "end": 3.0, "speaker": "SPEAKER_0", "text": "hi", "embedding": ref},
+        ]
+        result = identify_speakers(conn, segments, "/fake/audio.wav",
+                                   high_conf_threshold=0.99, low_conf_threshold=0.99)
+        # When matched, avg_embedding presence is not required (implementation detail)
+        # Just verify name is resolved
+        self.assertTrue(result["SPEAKER_0"]["matched"])
+        self.assertEqual(result["SPEAKER_0"]["name"], "Alice")
+
+
 if __name__ == "__main__":
     unittest.main()

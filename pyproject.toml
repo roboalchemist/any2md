@@ -35,6 +35,7 @@ packages = ["src/any2md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 markers = [
     "integration: requires real model inference or network access (use -m integration to run)",
     "slow: takes more than 10 seconds",

@@ -671,6 +671,9 @@ def transcribe(
     diarize_model_name: Optional[str] = None,
     identify: bool = False,
     audio_for_speaker: Optional[str] = None,
+    auto_enroll: bool = False,
+    no_enroll: bool = False,
+    _unmatched_out: Optional[List] = None,
 ) -> str:
     """
     Transcribe audio file using mlx-audio (Parakeet).
@@ -688,6 +691,13 @@ def transcribe(
         identify: If True and diarization was run, extract WeSpeaker embeddings per segment
         audio_for_speaker: Path to 16kHz mono WAV to use for speaker embedding extraction;
             defaults to audio_file if identify is True and this is None
+        auto_enroll: If True, auto-enroll unmatched speakers as Unknown_N without prompting.
+            Mutually exclusive with interactive prompting.
+        no_enroll: If True, skip enrollment prompts entirely and leave unmatched speakers
+            as SPEAKER_N labels (current default for non-TTY environments).
+        _unmatched_out: Optional mutable list; if provided, unmatched speaker dicts (with
+            label, embedding, segments) are appended to it for the caller to use (e.g. JSON
+            output). Internal use by main() only.
 
     Returns:
         Path to the generated output file
@@ -764,16 +774,99 @@ def transcribe(
     speaker_map: Optional[Dict] = None
     if identify and diarized_segments is not None:
         try:
-            from any2md.speaker import identify_speakers, open_catalog, close_catalog
+            from any2md.speaker import (
+                identify_speakers,
+                open_catalog,
+                close_catalog,
+                add_speaker,
+                enroll,
+                _next_unknown_name,
+            )
             logger.info("Matching speakers against catalog...")
             catalog_path = None  # Use default catalog path
             conn = open_catalog(catalog_path)
             try:
                 speaker_map = identify_speakers(conn, diarized_segments, audio_for_speaker or audio_file)
+
+                # --- Post-identification enrollment ---
+                unmatched = [
+                    (label, info)
+                    for label, info in speaker_map.items()
+                    if not info.get("matched")
+                ]
+
+                if unmatched and not no_enroll:
+                    if auto_enroll:
+                        # Auto-enroll all unmatched as Unknown_N
+                        for label, info in unmatched:
+                            avg_emb = info.get("avg_embedding")
+                            if avg_emb is None:
+                                logger.warning("No embedding for %s — skipping auto-enroll", label)
+                                continue
+                            new_name = _next_unknown_name(conn)
+                            speaker_id = add_speaker(conn, new_name)
+                            enroll(
+                                conn,
+                                speaker_id,
+                                avg_emb,
+                                source_file=audio_for_speaker or audio_file,
+                                source_type="auto_enroll",
+                            )
+                            speaker_map[label]["name"] = new_name
+                            speaker_map[label]["matched"] = True
+                            logger.info("Auto-enrolled %s as %r", label, new_name)
+
+                    elif is_json_mode() and _unmatched_out is not None:
+                        # JSON mode: include unmatched speakers with embeddings for caller
+                        for label, info in unmatched:
+                            avg_emb = info.get("avg_embedding")
+                            entry: Dict = {
+                                "label": label,
+                                "embedding": avg_emb.tolist() if avg_emb is not None else None,
+                                "segments": info.get("segments", []),
+                            }
+                            _unmatched_out.append(entry)
+
+                    elif sys.stdout.isatty():
+                        # Interactive TTY: prompt for each unmatched speaker
+                        for label, info in unmatched:
+                            avg_emb = info.get("avg_embedding")
+                            segs = info.get("segments", [])
+                            total_secs = sum(
+                                (s.get("end") or 0) - (s.get("start") or 0) for s in segs
+                            )
+                            print(  # noqa: T201 — intentional interactive output
+                                f"\n{label} is unknown (spoke for {total_secs:.1f}s, "
+                                f"{len(segs)} segment(s)).",
+                                file=sys.stderr,
+                            )
+                            name = typer.prompt(
+                                f"Enter name to enroll {label} (or press Enter to skip)",
+                                default="",
+                            )
+                            name = name.strip()
+                            if name and avg_emb is not None:
+                                speaker_id = add_speaker(conn, name)
+                                enroll(
+                                    conn,
+                                    speaker_id,
+                                    avg_emb,
+                                    source_file=audio_for_speaker or audio_file,
+                                    source_type="interactive_enroll",
+                                )
+                                speaker_map[label]["name"] = name
+                                speaker_map[label]["matched"] = True
+                                logger.info("Enrolled %s as %r", label, name)
+                            elif name and avg_emb is None:
+                                logger.warning(
+                                    "No embedding available for %s — cannot enroll", label
+                                )
+                    # else: non-TTY, not auto_enroll, not JSON → silently leave SPEAKER_N
+
             finally:
                 close_catalog(catalog_path)
 
-            # Build frontmatter lists from speaker_map
+            # Build frontmatter lists from speaker_map (after any enrollment updates)
             if metadata is not None and speaker_map:
                 identified = [info["name"] for info in speaker_map.values() if info.get("matched")]
                 unidentified = [
@@ -936,6 +1029,14 @@ def main(
         "--identify/--no-identify",
         help="Extract WeSpeaker ResNet293 speaker embeddings per diarized segment. Requires --diarize and any2md[speaker].",
     )] = False,
+    auto_enroll: Annotated[bool, typer.Option(
+        "--auto-enroll",
+        help="Auto-enroll unmatched speakers as Unknown_N without prompting. Requires --identify. Mutually exclusive with --no-enroll.",
+    )] = False,
+    no_enroll: Annotated[bool, typer.Option(
+        "--no-enroll",
+        help="Skip enrollment prompts entirely; leave unmatched speakers as SPEAKER_N labels. Requires --identify.",
+    )] = False,
     verbose: Annotated[bool, typer.Option(
         "--verbose", "-v",
         help="Enable verbose (DEBUG) logging.",
@@ -984,6 +1085,18 @@ def main(
                 logger.warning("--identify has no effect without --diarize; ignoring")
                 identify = False
 
+            if auto_enroll and no_enroll:
+                logger.error("--auto-enroll and --no-enroll are mutually exclusive")
+                raise typer.Exit(code=1)
+
+            if (auto_enroll or no_enroll) and not identify:
+                logger.warning("--auto-enroll/--no-enroll have no effect without --identify; ignoring")
+                auto_enroll = False
+                no_enroll = False
+
+            # Collect unmatched speakers for JSON output
+            _unmatched: List[Dict] = []
+
             output_file = transcribe(
                 whisper_audio,
                 model,
@@ -996,15 +1109,32 @@ def main(
                 diarize_model_name=diarize_model if diarize_flag else None,
                 identify=identify,
                 audio_for_speaker=whisper_audio if identify else None,
+                auto_enroll=auto_enroll,
+                no_enroll=no_enroll,
+                _unmatched_out=_unmatched if (json_output or is_json_mode()) else None,
             )
 
             logger.info(f"Transcription completed successfully. Output saved to: {output_file}")
 
             if json_output or is_json_mode():
+                import json as _json
                 from pathlib import Path as _Path
                 content = _Path(output_file).read_text(encoding='utf-8')
                 fm = metadata or {}
-                write_json_output(fm, content, input, "yt", fields)
+                # Build output dict manually to support unmatched_speakers extension
+                output_dict: Dict = {
+                    "frontmatter": fm,
+                    "content": content,
+                    "source": input,
+                    "converter": "yt",
+                }
+                if _unmatched:
+                    output_dict["unmatched_speakers"] = _unmatched
+                if fields:
+                    from any2md.common import _filter_fields
+                    output_dict = _filter_fields(output_dict, fields)
+                _json.dump(output_dict, sys.stdout, indent=2, default=str)
+                sys.stdout.write("\n")
 
         except Exception as e:
             logger.error(f"Error: {str(e)}")
