@@ -247,8 +247,9 @@ class TestCompletionSubcommand(unittest.TestCase):
 
     def test_fish_lists_flags(self):
         result = self._run("completion", "fish")
-        self.assertIn("--json", result.stdout)
-        self.assertIn("--output-dir", result.stdout)
+        # fish uses long-name format without leading '--': -l json, -l output-dir
+        self.assertIn("-l json", result.stdout)
+        self.assertIn("-l output-dir", result.stdout)
 
     def test_fish_nothing_on_stderr(self):
         result = self._run("completion", "fish")

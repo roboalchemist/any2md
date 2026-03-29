@@ -544,6 +544,7 @@ Commands:
   speaker     Manage speaker enrollment catalog
   deps        Show optional dependency status
   docs        Print README documentation to stdout
+  completion  Output shell completion script (bash, zsh, fish)
 
 Available on this system: {available}""")
     typer.echo("\nRun 'any2md <command> --help' for command-specific options.")
