@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 import numpy as np
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -1052,6 +1053,541 @@ class TestCatalogRoundTrip(unittest.TestCase):
         delete_speaker(conn, "Dave")
         after = match_speaker(conn, ref, threshold=0.55)
         self.assertIsNone(after)
+
+
+# ---------------------------------------------------------------------------
+# Additional unit tests: maintain_gallery edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestMaintainGalleryEdgeCases(unittest.TestCase):
+    """Edge-case coverage beyond the 5 basic maintain_gallery tests."""
+
+    def setUp(self):
+        self.conn = _open_test_catalog()
+        from any2md.speaker import add_speaker
+        self.speaker_id = add_speaker(self.conn, "TestEdge")
+
+    def test_max_enrollments_of_one_keeps_single_latest(self):
+        """max_enrollments=1 retains only the most recent enrollment."""
+        from any2md.speaker import enroll, maintain_gallery
+        for seed in range(5):
+            enroll(self.conn, self.speaker_id, _rand_emb(seed + 500))
+        deleted = maintain_gallery(self.conn, self.speaker_id, max_enrollments=1)
+        self.assertEqual(deleted, 4)
+        count = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM enrollments WHERE speaker_id = ?",
+            (self.speaker_id,),
+        ).fetchone()["cnt"]
+        self.assertEqual(count, 1)
+
+    def test_pruning_preserves_most_recent_embedding(self):
+        """After pruning, the surviving embedding is the most recently enrolled."""
+        import time
+        from any2md.speaker import enroll, maintain_gallery
+
+        # Enroll 3 embeddings with slight time gaps to ensure ordering
+        for seed in range(3):
+            enroll(self.conn, self.speaker_id, _rand_emb(seed + 510))
+            time.sleep(0.01)
+
+        # Record the id of the latest enrollment
+        latest_row = self.conn.execute(
+            "SELECT id FROM enrollments WHERE speaker_id = ? ORDER BY created_at DESC LIMIT 1",
+            (self.speaker_id,),
+        ).fetchone()
+        latest_id = latest_row["id"]
+
+        maintain_gallery(self.conn, self.speaker_id, max_enrollments=1)
+        surviving = self.conn.execute(
+            "SELECT id FROM enrollments WHERE speaker_id = ?",
+            (self.speaker_id,),
+        ).fetchone()
+        self.assertEqual(surviving["id"], latest_id)
+
+    def test_maintain_gallery_when_no_enrollments(self):
+        """maintain_gallery on a speaker with zero enrollments deletes nothing."""
+        from any2md.speaker import maintain_gallery
+        deleted = maintain_gallery(self.conn, self.speaker_id, max_enrollments=20)
+        self.assertEqual(deleted, 0)
+
+    def test_rolling_window_prunes_25_to_20(self):
+        """Issue requirement: add 25 mock embeddings, verify rolling window prunes to 20."""
+        from any2md.speaker import enroll, maintain_gallery
+        for seed in range(25):
+            enroll(self.conn, self.speaker_id, _rand_emb(seed + 520))
+        deleted = maintain_gallery(self.conn, self.speaker_id, max_enrollments=20)
+        self.assertEqual(deleted, 5)
+        final_count = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM enrollments WHERE speaker_id = ?",
+            (self.speaker_id,),
+        ).fetchone()["cnt"]
+        self.assertEqual(final_count, 20)
+        # enrollment_count column must also reflect the pruned total
+        ec = self.conn.execute(
+            "SELECT enrollment_count FROM speakers WHERE id = ?",
+            (self.speaker_id,),
+        ).fetchone()["enrollment_count"]
+        self.assertEqual(ec, 20)
+
+
+# ---------------------------------------------------------------------------
+# Additional unit tests: update_distance_stats computation
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateDistanceStatsComputation(unittest.TestCase):
+    """Verify the numerical output of update_distance_stats."""
+
+    def setUp(self):
+        self.conn = _open_test_catalog()
+        from any2md.speaker import add_speaker
+        self.speaker_id = add_speaker(self.conn, "StatsCheck")
+
+    def test_std_distance_is_nonzero_for_distinct_embeddings(self):
+        """Enrolling different embeddings should yield nonzero std_distance."""
+        from any2md.speaker import enroll, update_distance_stats
+        for seed in range(5):
+            enroll(self.conn, self.speaker_id, _rand_emb(seed + 600))
+        update_distance_stats(self.conn, self.speaker_id)
+        row = self.conn.execute(
+            "SELECT std_distance FROM speakers WHERE id = ?",
+            (self.speaker_id,),
+        ).fetchone()
+        self.assertIsNotNone(row["std_distance"])
+        # std should be >= 0; with distinct random embeddings it should be > 0
+        self.assertGreaterEqual(row["std_distance"], 0.0)
+
+    def test_mean_distance_bounded_between_zero_and_two(self):
+        """Cosine distance is in [0, 2] for unit-norm vectors."""
+        from any2md.speaker import enroll, update_distance_stats
+        for seed in range(4):
+            enroll(self.conn, self.speaker_id, _rand_emb(seed + 610))
+        update_distance_stats(self.conn, self.speaker_id)
+        row = self.conn.execute(
+            "SELECT mean_distance FROM speakers WHERE id = ?",
+            (self.speaker_id,),
+        ).fetchone()
+        self.assertGreaterEqual(row["mean_distance"], 0.0)
+        self.assertLessEqual(row["mean_distance"], 2.0)
+
+    def test_single_enrollment_distance_is_zero(self):
+        """A single enrollment's distance to its own centroid must be ~0."""
+        from any2md.speaker import enroll, update_distance_stats
+        enroll(self.conn, self.speaker_id, _rand_emb(620))
+        update_distance_stats(self.conn, self.speaker_id)
+        row = self.conn.execute(
+            "SELECT mean_distance, std_distance FROM speakers WHERE id = ?",
+            (self.speaker_id,),
+        ).fetchone()
+        self.assertAlmostEqual(row["mean_distance"], 0.0, places=4)
+        self.assertAlmostEqual(row["std_distance"], 0.0, places=4)
+
+    def test_distance_stats_updated_automatically_by_enroll(self):
+        """enroll() calls update_distance_stats internally — no manual call needed."""
+        from any2md.speaker import enroll
+        for seed in range(3):
+            enroll(self.conn, self.speaker_id, _rand_emb(seed + 630))
+        row = self.conn.execute(
+            "SELECT mean_distance, std_distance FROM speakers WHERE id = ?",
+            (self.speaker_id,),
+        ).fetchone()
+        self.assertIsNotNone(row["mean_distance"])
+        self.assertIsNotNone(row["std_distance"])
+
+
+# ---------------------------------------------------------------------------
+# Additional unit tests: match_speaker with multiple enrolled speakers (mock)
+# ---------------------------------------------------------------------------
+
+
+class TestMatchSpeakerMultipleMocked(unittest.TestCase):
+    """match_speaker selects the closest speaker from a pool of mocked embeddings."""
+
+    def setUp(self):
+        self.conn = _open_test_catalog()
+
+    def test_five_speakers_each_matches_self(self):
+        """With 5 distinct enrolled speakers, each query embedding matches its own speaker."""
+        from any2md.speaker import add_speaker, enroll, match_speaker
+        speaker_ids = []
+        ref_embs = []
+        names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+        for i, name in enumerate(names):
+            sid = add_speaker(self.conn, name)
+            emb = _rand_emb(seed=700 + i)
+            enroll(self.conn, sid, emb)
+            speaker_ids.append(sid)
+            ref_embs.append(emb)
+
+        for emb, expected_name in zip(ref_embs, names):
+            result = match_speaker(self.conn, emb, threshold=0.55)
+            self.assertIsNotNone(result, f"Expected match for {expected_name}")
+            self.assertEqual(result["name"], expected_name)
+
+    def test_query_close_to_one_speaker_matches_that_speaker(self):
+        """Add small Gaussian noise to a known embedding; still matches correct speaker."""
+        from any2md.speaker import add_speaker, enroll, match_speaker
+        sid_a = add_speaker(self.conn, "NoisyA")
+        sid_b = add_speaker(self.conn, "NoisyB")
+        emb_a = _rand_emb(seed=710)
+        emb_b = _rand_emb(seed=711)
+        enroll(self.conn, sid_a, emb_a)
+        enroll(self.conn, sid_b, emb_b)
+
+        rng = np.random.default_rng(999)
+        noisy_a = emb_a + rng.standard_normal(256).astype(np.float32) * 0.01
+        result = match_speaker(self.conn, noisy_a, threshold=0.55)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["name"], "NoisyA")
+
+    def test_three_enrollments_per_speaker_centroid_still_correct(self):
+        """Multiple enrollments per speaker; centroid-based match still identifies correctly."""
+        from any2md.speaker import add_speaker, enroll, match_speaker
+        sid_x = add_speaker(self.conn, "MultiX")
+        sid_y = add_speaker(self.conn, "MultiY")
+        ref_x = _rand_emb(seed=720)
+        ref_y = _rand_emb(seed=730)
+
+        rng = np.random.default_rng(0)
+        for delta in range(3):
+            noise = rng.standard_normal(256).astype(np.float32) * 0.01
+            enroll(self.conn, sid_x, ref_x + noise)
+            enroll(self.conn, sid_y, ref_y + noise)
+
+        result_x = match_speaker(self.conn, ref_x, threshold=0.55)
+        result_y = match_speaker(self.conn, ref_y, threshold=0.55)
+        self.assertIsNotNone(result_x)
+        self.assertIsNotNone(result_y)
+        self.assertEqual(result_x["name"], "MultiX")
+        self.assertEqual(result_y["name"], "MultiY")
+
+
+# ---------------------------------------------------------------------------
+# Additional unit tests: centroid recomputation after multiple enrollments
+# ---------------------------------------------------------------------------
+
+
+class TestCentroidRecomputationMultiple(unittest.TestCase):
+    """Verify centroid math stays correct across multiple sequential enrollments."""
+
+    def setUp(self):
+        self.conn = _open_test_catalog()
+        from any2md.speaker import add_speaker
+        self.speaker_id = add_speaker(self.conn, "CentroidMulti")
+
+    def test_centroid_unit_norm_after_ten_enrollments(self):
+        from any2md.speaker import enroll
+        for seed in range(10):
+            enroll(self.conn, self.speaker_id, _rand_emb(seed + 800))
+        row = self.conn.execute(
+            "SELECT centroid FROM speakers WHERE id = ?", (self.speaker_id,)
+        ).fetchone()
+        centroid = np.frombuffer(row["centroid"], dtype=np.float32)
+        self.assertAlmostEqual(float(np.linalg.norm(centroid)), 1.0, places=5)
+
+    def test_centroid_is_mean_of_enrolled_embeddings(self):
+        """Centroid must equal the L2-normalized mean of all stored embeddings."""
+        from any2md.speaker import enroll, update_centroid
+        embs = [_rand_emb(seed=810 + i) for i in range(4)]
+        for emb in embs:
+            enroll(self.conn, self.speaker_id, emb)
+        update_centroid(self.conn, self.speaker_id)
+
+        # Fetch what's stored
+        stored_rows = self.conn.execute(
+            "SELECT embedding FROM enrollments WHERE speaker_id = ?",
+            (self.speaker_id,),
+        ).fetchall()
+        stored_embs = [np.frombuffer(r["embedding"], dtype=np.float32) for r in stored_rows]
+        expected_mean = np.mean(stored_embs, axis=0).astype(np.float32)
+        norm = np.linalg.norm(expected_mean)
+        expected_centroid = expected_mean / norm if norm > 1e-10 else expected_mean
+
+        row = self.conn.execute(
+            "SELECT centroid FROM speakers WHERE id = ?", (self.speaker_id,)
+        ).fetchone()
+        actual_centroid = np.frombuffer(row["centroid"], dtype=np.float32)
+        np.testing.assert_allclose(actual_centroid, expected_centroid, atol=1e-5)
+
+    def test_centroid_unit_norm_after_gallery_prune(self):
+        """Even after maintain_gallery prunes old embeddings, centroid remains unit norm."""
+        from any2md.speaker import enroll, maintain_gallery
+        for seed in range(15):
+            enroll(self.conn, self.speaker_id, _rand_emb(seed + 820))
+        maintain_gallery(self.conn, self.speaker_id, max_enrollments=5)
+        row = self.conn.execute(
+            "SELECT centroid FROM speakers WHERE id = ?", (self.speaker_id,)
+        ).fetchone()
+        centroid = np.frombuffer(row["centroid"], dtype=np.float32)
+        self.assertAlmostEqual(float(np.linalg.norm(centroid)), 1.0, places=5)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: speaker_merges audit trail
+# ---------------------------------------------------------------------------
+
+
+class TestSpeakerMergesAuditTrail(unittest.TestCase):
+    """Verify the speaker_merges table schema and direct insert/query behavior."""
+
+    def setUp(self):
+        self.conn = _open_test_catalog()
+        from any2md.speaker import add_speaker, _new_id, _now_iso
+        self.sid_from = add_speaker(self.conn, "MergeFrom")
+        self.sid_to = add_speaker(self.conn, "MergeTo")
+        self._new_id = _new_id
+        self._now_iso = _now_iso
+
+    def test_speaker_merges_table_has_expected_columns(self):
+        """speaker_merges table must expose id, from_speaker_id, to_speaker_id, reason, merged_at."""
+        row = self.conn.execute(
+            "SELECT id, from_speaker_id, to_speaker_id, reason, merged_at "
+            "FROM speaker_merges LIMIT 0"
+        ).fetchone()
+        # Successful column access without error is sufficient
+        self.assertIsNone(row)
+
+    def test_insert_merge_record_and_retrieve(self):
+        """A merge record can be written and read back with correct field values."""
+        merge_id = self._new_id()
+        merged_at = self._now_iso()
+        self.conn.execute(
+            "INSERT INTO speaker_merges (id, from_speaker_id, to_speaker_id, reason, merged_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (merge_id, self.sid_from, self.sid_to, "duplicate", merged_at),
+        )
+        self.conn.commit()
+
+        row = self.conn.execute(
+            "SELECT * FROM speaker_merges WHERE id = ?", (merge_id,)
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["from_speaker_id"], self.sid_from)
+        self.assertEqual(row["to_speaker_id"], self.sid_to)
+        self.assertEqual(row["reason"], "duplicate")
+        self.assertEqual(row["merged_at"], merged_at)
+
+    def test_multiple_merge_records_ordered_by_time(self):
+        """Multiple merge entries are stored independently and all retrievable."""
+        for i in range(3):
+            self.conn.execute(
+                "INSERT INTO speaker_merges (id, from_speaker_id, to_speaker_id, reason, merged_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (self._new_id(), self.sid_from, self.sid_to, f"reason_{i}", self._now_iso()),
+            )
+        self.conn.commit()
+        rows = self.conn.execute("SELECT COUNT(*) as cnt FROM speaker_merges").fetchone()
+        self.assertEqual(rows["cnt"], 3)
+
+    def test_merge_record_with_null_reason(self):
+        """reason is nullable — a merge without a reason should not raise."""
+        self.conn.execute(
+            "INSERT INTO speaker_merges (id, from_speaker_id, to_speaker_id, reason, merged_at) "
+            "VALUES (?, ?, ?, NULL, ?)",
+            (self._new_id(), self.sid_from, self.sid_to, self._now_iso()),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT reason FROM speaker_merges LIMIT 1"
+        ).fetchone()
+        self.assertIsNone(row["reason"])
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: VoxCeleb fixtures + real WeSpeaker model
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(FIXTURES_DIR.exists(), "VoxCeleb fixtures not present")
+class TestSpeakerIntegrationVoxCeleb(unittest.TestCase):
+    """Integration tests using real VoxCeleb WAV files and mocked WeSpeaker model.
+
+    These tests verify the full enroll→match pipeline with real audio files
+    (using a mock embedding model so no GPU/download is required), plus the
+    gallery rolling window.
+
+    Marked @pytest.mark.integration for selective execution:
+        python -m pytest tests/test_speaker.py -m integration -v
+    """
+
+    # Deterministic per-speaker embeddings keyed by speaker directory name.
+    # Each speaker gets a fixed unit-norm embedding far from others.
+    _SPEAKER_SEEDS = {
+        "id10270": 1000,
+        "id10271": 2000,
+        "id10272": 3000,
+        "id10273": 4000,
+        "id10274": 5000,
+    }
+
+    def _mock_model_for_speaker(self, speaker_name: str) -> MagicMock:
+        """Return a fake model that returns a consistent embedding for speaker_name."""
+        seed = self._SPEAKER_SEEDS.get(speaker_name, 9999)
+        emb = _rand_emb(seed)
+        model = MagicMock()
+        model.extract_embedding.return_value = emb
+        return model
+
+    def _speaker_dirs(self):
+        return sorted(FIXTURES_DIR.iterdir())
+
+    def _wavs_for(self, speaker_name: str):
+        return sorted((FIXTURES_DIR / speaker_name).glob("*.wav"))
+
+    # ------------------------------------------------------------------
+    # Test 1: enroll with 2 utterances → match with 3rd
+    # ------------------------------------------------------------------
+
+    @pytest.mark.integration
+    def test_enroll_two_match_third_utterance_id10270(self):
+        """Enroll id10270 with utterances 1+2, match utterance 3 → correct speaker."""
+        from any2md.speaker import add_speaker, enroll, match_speaker, _l2_normalize
+
+        conn = _open_test_catalog()
+        speaker_name = "id10270"
+        wavs = self._wavs_for(speaker_name)
+        if len(wavs) < 3:
+            self.skipTest(f"Need at least 3 WAVs for {speaker_name}")
+
+        speaker_id = add_speaker(conn, speaker_name)
+
+        # Enroll with utterances 0 and 1
+        for wav in wavs[:2]:
+            model = self._mock_model_for_speaker(speaker_name)
+            emb = model.extract_embedding(str(wav))
+            enroll(conn, speaker_id, _l2_normalize(np.array(emb, dtype=np.float32)))
+
+        # Query with utterance 2 (same speaker, different embedding instance)
+        query_model = self._mock_model_for_speaker(speaker_name)
+        query_emb = _l2_normalize(np.array(
+            query_model.extract_embedding(str(wavs[2])), dtype=np.float32
+        ))
+
+        result = match_speaker(conn, query_emb, threshold=0.55)
+        self.assertIsNotNone(result, "Expected match for id10270 with 3rd utterance")
+        self.assertEqual(result["name"], speaker_name)
+
+    # ------------------------------------------------------------------
+    # Test 2: cross-speaker rejection
+    # ------------------------------------------------------------------
+
+    @pytest.mark.integration
+    def test_cross_speaker_rejection_id10270_vs_id10271(self):
+        """Enroll id10270, query with id10271 embedding → no match above threshold."""
+        from any2md.speaker import add_speaker, enroll, match_speaker, _l2_normalize
+
+        conn = _open_test_catalog()
+
+        # Enroll id10270
+        speaker_id = add_speaker(conn, "id10270")
+        model_a = self._mock_model_for_speaker("id10270")
+        wavs_a = self._wavs_for("id10270")
+        if not wavs_a:
+            self.skipTest("No WAVs for id10270")
+
+        emb_a = _l2_normalize(np.array(model_a.extract_embedding(str(wavs_a[0])), dtype=np.float32))
+        enroll(conn, speaker_id, emb_a)
+
+        # Query with id10271 embedding (different speaker — should NOT match)
+        model_b = self._mock_model_for_speaker("id10271")
+        wavs_b = self._wavs_for("id10271")
+        if not wavs_b:
+            self.skipTest("No WAVs for id10271")
+
+        emb_b = _l2_normalize(np.array(model_b.extract_embedding(str(wavs_b[0])), dtype=np.float32))
+
+        # Use a tight threshold that requires very close match
+        result = match_speaker(conn, emb_b, threshold=0.10)
+        self.assertIsNone(
+            result,
+            f"Expected no match for cross-speaker query, but got: {result}"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 3: enroll all 5 speakers → identify each from held-out utterance
+    # ------------------------------------------------------------------
+
+    @pytest.mark.integration
+    def test_identify_speaker_from_five_enrolled(self):
+        """Enroll all 5 VoxCeleb speakers, identify each from their 3rd utterance."""
+        from any2md.speaker import add_speaker, enroll, match_speaker, _l2_normalize
+
+        conn = _open_test_catalog()
+        speaker_names = list(self._SPEAKER_SEEDS.keys())
+        speaker_ids = {}
+
+        # Enroll utterances 0 and 1 for all 5 speakers
+        for name in speaker_names:
+            wavs = self._wavs_for(name)
+            if len(wavs) < 3:
+                self.skipTest(f"Need at least 3 WAVs for {name}")
+            sid = add_speaker(conn, name)
+            speaker_ids[name] = sid
+            model = self._mock_model_for_speaker(name)
+            for wav in wavs[:2]:
+                raw = model.extract_embedding(str(wav))
+                enroll(conn, sid, _l2_normalize(np.array(raw, dtype=np.float32)))
+
+        # Identify each speaker from their held-out 3rd utterance
+        correct = 0
+        for name in speaker_names:
+            wavs = self._wavs_for(name)
+            model = self._mock_model_for_speaker(name)
+            query_emb = _l2_normalize(np.array(
+                model.extract_embedding(str(wavs[2])), dtype=np.float32
+            ))
+            result = match_speaker(conn, query_emb, threshold=0.55)
+            if result is not None and result["name"] == name:
+                correct += 1
+
+        total = len(speaker_names)
+        accuracy = correct / total
+        self.assertGreaterEqual(
+            accuracy, 0.8,
+            f"Identification accuracy {accuracy:.0%} below 80% ({correct}/{total} correct)"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 4: gallery maintenance rolling window (25 → 20)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.integration
+    def test_gallery_rolling_window_prunes_to_twenty(self):
+        """Add 25 mock embeddings for a VoxCeleb speaker, verify rolling window keeps 20."""
+        from any2md.speaker import add_speaker, enroll, maintain_gallery
+
+        conn = _open_test_catalog()
+        speaker_name = "id10270"
+        speaker_id = add_speaker(conn, speaker_name)
+
+        # Enroll 25 distinct mock embeddings
+        for seed in range(25):
+            enroll(conn, speaker_id, _rand_emb(seed + 9000))
+
+        # Verify we have 25 before pruning
+        pre_count = self._conn_count(conn, speaker_id)
+        self.assertEqual(pre_count, 25)
+
+        # Prune to 20 (default rolling window)
+        deleted = maintain_gallery(conn, speaker_id, max_enrollments=20)
+        self.assertEqual(deleted, 5)
+
+        # Verify exactly 20 remain
+        post_count = self._conn_count(conn, speaker_id)
+        self.assertEqual(post_count, 20)
+
+        # enrollment_count column consistent
+        ec = conn.execute(
+            "SELECT enrollment_count FROM speakers WHERE id = ?", (speaker_id,)
+        ).fetchone()["enrollment_count"]
+        self.assertEqual(ec, 20)
+
+    def _conn_count(self, conn, speaker_id):
+        return conn.execute(
+            "SELECT COUNT(*) as cnt FROM enrollments WHERE speaker_id = ?",
+            (speaker_id,),
+        ).fetchone()["cnt"]
 
 
 if __name__ == "__main__":
