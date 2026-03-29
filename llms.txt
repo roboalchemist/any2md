@@ -1,34 +1,217 @@
 # any2md
-
-> Convert any file format to markdown with YAML frontmatter. Local AI on Apple Silicon via MLX.
-
-## Subcommands
-
-- yt/audio/video: Transcribe audio/video via Parakeet STT with optional Sortformer diarization
-- pdf: Extract PDF text via pymupdf4llm, optional VLM OCR for scanned pages
-- img: Image OCR via Qwen3.5 vision-language model
-- web: Web URL to markdown via ReaderLM-v2
-- html: Local HTML to markdown via ReaderLM-v2
-- doc: Office documents (DOCX/PPTX/XLSX/EPUB/ODT/RTF) via markitdown
-- rst: reStructuredText via pypandoc/docutils
-- csv: CSV/TSV to markdown tables (stdlib, zero deps)
-- data: JSON/YAML/JSONL to markdown (stdlib, zero deps)
-- db: SQLite schema + sample data (stdlib, zero deps)
-- sub: Subtitles (SRT/VTT/ASS) via pysubs2
-- nb: Jupyter notebooks (stdlib, zero deps)
-- eml: Email .eml/.mbox (stdlib, zero deps)
-- org: Org-mode (pure regex, zero deps)
-- tex: LaTeX (pure regex, zero deps)
-- man: Unix man pages (mandoc + regex, zero deps)
-
-## Common Flags
-
-All subcommands: --output-dir/-o, --format/-f (md|txt), --verbose/-v
-
-## Install
-
-brew install roboalchemist/tap/any2md
+> Convert any file format to markdown with YAML frontmatter. Local AI on Apple Silicon via MLX — no cloud APIs.
 
 ## Docs
 
-- [README](https://github.com/roboalchemist/any2md/blob/main/README.md)
+- [README](README.md): Installation, usage, supported formats, architecture, model pre-download
+- [CLAUDE.md](CLAUDE.md): Full project structure, module details, architecture, testing, CLI reference
+
+## Quick Reference
+
+```bash
+# Auto-detect — just pass any file, URL, or git directory
+any2md lecture.mp4                         # audio/video → markdown (Parakeet STT)
+any2md podcast.mp3 --diarize               # with speaker diarization
+any2md document.pdf                        # PDF → markdown
+any2md screenshot.png                      # image → markdown (Qwen VLM OCR)
+any2md https://example.com                 # web page → markdown (ReaderLM)
+any2md page.html                           # local HTML → markdown
+any2md report.docx                         # office doc → markdown
+any2md data.csv                            # CSV/TSV → markdown table
+any2md config.json                         # JSON/YAML → markdown
+any2md app.db                              # SQLite → schema + data
+any2md captions.srt                        # subtitles → markdown
+any2md notebook.ipynb                      # Jupyter → markdown
+any2md message.eml                         # email → markdown
+any2md notes.org                           # Org-mode → markdown
+any2md paper.tex                           # LaTeX → markdown
+any2md command.1                           # man page → markdown
+any2md readme.rst                          # RST → markdown
+any2md .                                   # git repo → markdown via repomix
+
+# Agent-friendly JSON output (any subcommand)
+any2md data.csv --json
+any2md config.json --json --fields frontmatter.format,converter
+```
+
+## Subcommands
+
+```bash
+any2md yt <input>
+  # Transcribe audio/video to markdown, SRT, or plain text.
+  # Accepts YouTube URLs, YouTube video IDs (11 chars), or local audio/video files.
+  # Aliases: audio (MP3/WAV/FLAC/OGG/AAC/M4A), video (MP4/MKV/AVI/MOV/WebM)
+  # Requires: mlx-audio[stt], yt-dlp (YouTube), ffmpeg
+  --model NAME             # Parakeet alias or HuggingFace ID (default: parakeet-v3)
+  --diarize                # Enable Sortformer speaker diarization
+  --format md|srt|txt      # Output format (default: md)
+  --chunk-duration SECS    # Split long audio into chunks
+  --keep-audio             # Keep downloaded audio file
+
+any2md pdf <input>
+  # Extract PDF text via pymupdf4llm; optional Qwen3.5 VLM OCR for scanned pages.
+  # Auto-falls back to OCR when extraction yields < 50 chars/page.
+  # Requires: pymupdf4llm; mlx-vlm for --ocr
+  --pages "1-10,15"        # Page range selection
+  --ocr                    # Force VLM OCR mode
+  --model NAME             # VLM model alias (default: qwen3.5-9b)
+
+any2md img <input>
+  # Image OCR via Qwen3.5 vision-language model.
+  # Formats: JPEG, PNG, GIF, BMP, WebP, TIFF
+  # Requires: mlx-vlm
+  --model NAME             # VLM model alias (default: qwen3.5-9b)
+
+any2md web <url>
+  # Fetch web URL and convert to markdown via ReaderLM-v2.
+  # Requires: mlx-lm, httpx
+
+any2md html <input>
+  # Convert local HTML file to markdown via ReaderLM-v2.
+  # Supports batch directory conversion.
+  # Requires: mlx-lm
+
+any2md doc <input>
+  # Convert office documents via markitdown.
+  # Formats: DOCX, PPTX, XLSX, EPUB, ODT, RTF
+  # Requires: markitdown
+
+any2md rst <input>
+  # Convert reStructuredText to markdown.
+  # Engine: pypandoc → docutils fallback → pure regex fallback
+
+any2md csv <input>
+  # Convert CSV/TSV to markdown tables. Zero dependencies (stdlib only).
+  # Auto-detects delimiter.
+  --max-rows N             # Row limit (default: 500)
+  --max-col-width N        # Column width limit
+
+any2md data <input>
+  # Convert JSON/YAML/JSONL to smart markdown. Zero dependencies (stdlib only).
+  # Auto-selects table vs bullet vs code block based on structure.
+
+any2md db <input>
+  # Export SQLite schema + sample data as markdown. Zero dependencies (stdlib only).
+  --max-rows N             # Rows per table (default: 20)
+  --max-tables N           # Table limit
+  --skip-views             # Exclude views from output
+
+any2md sub <input>
+  # Convert subtitles to timestamped markdown via pysubs2.
+  # Formats: SRT, VTT, ASS, SSA
+  --format md|txt          # Output format
+
+any2md nb <input>
+  # Convert Jupyter notebooks to markdown. Zero dependencies (stdlib only).
+  # Renders code cells, markdown cells, and cell outputs.
+  --no-outputs             # Skip cell output blocks
+
+any2md eml <input>
+  # Convert email (.eml or .mbox) to markdown. Zero dependencies (stdlib only).
+  # Extracts headers and MIME body.
+
+any2md org <input>
+  # Convert Emacs Org-mode to markdown. Pure regex, zero dependencies.
+
+any2md tex <input>
+  # Convert LaTeX to markdown. Pure regex, zero dependencies.
+
+any2md man <input>
+  # Convert Unix man pages to markdown. Uses mandoc; regex fallback if unavailable.
+
+any2md repo <dir>
+  # Convert a git repository to a single markdown file via repomix.
+  # Produces YAML frontmatter with file stats. JSON mode passes repomix native JSON.
+  # Requires: repomix (npm install -g repomix)
+  --style markdown|json    # Output style
+  --compress               # Compress output
+  --remove-comments        # Strip code comments
+
+any2md speaker             # Manage speaker enrollment catalog (see below)
+
+any2md deps                # Show installed/missing optional dependency status
+
+any2md docs                # Print README documentation to stdout
+```
+
+## Global Flags
+
+All subcommands accept:
+
+```bash
+--json, -j              # Structured JSON output to stdout (agent-friendly)
+--fields FIELDS         # Dot-notation field selection for --json output
+                        #   e.g. "frontmatter.rows,content"
+--quiet, -q             # Suppress INFO logs (or set ANY2MD_QUIET=1)
+--version, -V           # Print version and exit
+-o, --output-dir PATH   # Output directory (default: cwd)
+-f, --format [md|txt]   # Output format (default: md; yt also supports srt)
+-v, --verbose           # Enable DEBUG logging
+```
+
+## JSON Output Format
+
+All converters support `--json` for structured stdout:
+
+```json
+{
+  "frontmatter": { "title": "...", "rows": 42 },
+  "content": "## markdown content...",
+  "source": "/path/to/file.csv",
+  "converter": "csv"
+}
+```
+
+Use `--fields` to select specific keys and reduce token usage:
+
+```bash
+any2md data.csv --json --fields frontmatter.rows,content
+```
+
+## Speaker Identification
+
+The `speaker` subcommand manages a local speaker enrollment catalog. When `--diarize` is used during transcription, enrolled speakers are identified by name instead of generic labels like `[SPEAKER_0]`.
+
+### Enrollment workflow
+
+```bash
+# 1. Enroll speakers from reference audio clips
+any2md speaker add "Alice" --audio alice-sample.mp3
+any2md speaker add "Bob" --audio meeting.mp3 --start 15.0 --end 45.0
+
+# Multiple enrollments per speaker improve accuracy
+any2md speaker add "Alice" --audio another-clip.wav --start 0 --end 30
+
+# 2. List enrolled speakers
+any2md speaker list
+any2md speaker list --json
+
+# 3. Transcribe — enrolled speakers are named automatically
+any2md yt interview.mp4 --diarize
+any2md audio meeting.mp3 --diarize
+```
+
+### Catalog management
+
+```bash
+any2md speaker remove "Alice"              # Remove speaker and all enrollments
+any2md speaker merge "Alice Smith" "Alice" # Merge A into B (A deleted)
+any2md speaker stats "Alice"               # Enrollment count, distance stats, meeting count
+any2md speaker gallery "Alice"             # All enrollments: source type, date, confidence
+```
+
+Speaker catalog stored at `~/.config/any2md/speakers.db` (SQLite). Override with `--db PATH`.
+
+## Key Files
+
+- `src/any2md/cli.py` — unified entry point, auto-detection, subcommand routing
+- `src/any2md/common.py` — shared: frontmatter builder, logging, JSON output helpers
+- `src/any2md/yt.py` — audio/video/YouTube transcription + speaker diarization
+- `src/any2md/pdf.py` — PDF extraction + optional VLM OCR
+- `src/any2md/img.py` — image OCR via Qwen3.5 vision-language model
+- `src/any2md/web.py` — web URL → markdown via ReaderLM-v2
+- `src/any2md/html.py` — local HTML → markdown via ReaderLM-v2
+- `src/any2md/doc.py` — office documents via markitdown
+- `src/any2md/repo.py` — git repositories via repomix (172-line wrapper)
+- `scripts/download_models.py` — pre-download MLX models (--stt, --vlm, --reader, --diarize, --all)
+- `tests/` — 808 tests across 19 files (pytest)
