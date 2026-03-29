@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "any2md"
-version = "0.3.2"
+version = "0.3.3"
 description = "Media to Markdown toolkit for Apple Silicon"
 readme = "README.md"
 license = "MIT"
