@@ -1755,7 +1755,7 @@ class TestSpeakerGroups(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestResolveSpeciakersArg(unittest.TestCase):
+class TestResolveSpeakersArg(unittest.TestCase):
     """Tests for @group resolution in --speakers."""
 
     def setUp(self):
