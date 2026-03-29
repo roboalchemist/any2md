@@ -179,13 +179,21 @@ def app():
     """Main entry point — dispatches to subcommand or auto-detects."""
     args = sys.argv[1:]
 
-    if args == ["--help"] or args == ["-h"]:
+    if args == ["--help"] or args == ["-h"] or not args:
         _show_help()
+        if not args:
+            raise SystemExit(2)
         return
 
-    if not args:
-        _show_help()
-        raise SystemExit(2)
+    # Standard subcommand help: any2md <cmd> --help
+    if len(args) >= 2 and args[1] in ("--help", "-h") and args[0] in _SUBCOMMANDS:
+        tool_apps = _get_tool_apps()
+        if args[0] == "deps":
+            _show_deps()
+            return
+        if args[0] in tool_apps:
+            tool_apps[args[0]](["--help"], standalone_mode=True)
+            return
 
     if args == ["--version"] or args == ["-V"]:
         _show_version()
@@ -256,7 +264,7 @@ def _show_version():
 
 
 def _show_help():
-    """Print help text."""
+    """Print help text in a format compatible with standard CLI conventions."""
     tool_apps = _get_tool_apps()
     available = ", ".join(sorted(tool_apps.keys()))
 
@@ -264,42 +272,52 @@ def _show_help():
 
 Convert anything to markdown. Auto-detects input type by extension or URL.
 
-Auto-detect examples:
+Examples:
   any2md video.mp4                  Audio/video → markdown (Parakeet STT)
   any2md podcast.mp3 --diarize      With speaker diarization
   any2md document.pdf               PDF → markdown
   any2md screenshot.png             Image → markdown (Qwen VLM)
   any2md https://example.com        Web page → markdown (ReaderLM)
-  any2md page.html                  Local HTML → markdown
-  any2md report.docx                Office doc → markdown
   any2md data.csv                   CSV/TSV → markdown table
   any2md config.json                JSON/YAML → markdown
   any2md app.db                     SQLite → markdown (schema + data)
-  any2md captions.srt               Subtitles → markdown
-  any2md notebook.ipynb             Jupyter → markdown
-  any2md message.eml                Email → markdown
-  any2md notes.org                  Org-mode → markdown
-  any2md paper.tex                  LaTeX → markdown
-  any2md command.1                  Man page → markdown
-  any2md readme.rst                 RST → markdown
 
-Subcommands (run 'any2md <cmd> --help' for options):
-  audio Audio transcription            video Video transcription
-  yt    Audio/video + YouTube          pdf   PDF extraction
-  img   Image OCR via VLM              web   Web URL conversion
-  html  Local HTML conversion          doc   Office docs (DOCX/PPTX/XLSX/EPUB)
-  rst   reStructuredText               csv   CSV/TSV tables
-  data  JSON/YAML structured data      db    SQLite databases
-  sub   Subtitles (SRT/VTT/ASS)        nb    Jupyter notebooks
-  eml   Email (.eml/.mbox)             org   Org-mode
-  tex   LaTeX                          man   Unix man pages
-  repo  Git repository via repomix
-  speaker  Manage speaker enrollment catalog
-  deps  Show optional dependency status
+Global Options:
+  --json, -j            Output as JSON to stdout
+  --fields FIELDS       Dot-notation field selection for --json
+  --quiet, -q           Suppress INFO logs
+  --version, -V         Print version and exit
+  -o, --output-dir DIR  Output directory (default: cwd)
+  -f, --format FMT      Output format: md, txt (yt also: srt)
+  -v, --verbose         DEBUG logging
+  --help, -h            Show this help message
+
+Commands:
+  yt          Audio/video transcription + YouTube download
+  audio       Alias for yt
+  video       Alias for yt
+  pdf         PDF text extraction (+ optional VLM OCR)
+  img         Image OCR via Qwen VLM
+  web         Web URL → markdown via ReaderLM
+  html        Local HTML → markdown via ReaderLM
+  doc         Office docs (DOCX/PPTX/XLSX/EPUB/ODT/RTF)
+  rst         reStructuredText conversion
+  csv         CSV/TSV → markdown tables
+  data        JSON/YAML/JSONL → markdown
+  db          SQLite → schema + sample data
+  sub         Subtitles (SRT/VTT/ASS/SSA)
+  nb          Jupyter notebooks
+  eml         Email (.eml/.mbox)
+  org         Org-mode → markdown
+  tex         LaTeX → markdown
+  man         Unix man pages → markdown
+  repo        Git repository → markdown via repomix
+  speaker     Manage speaker enrollment catalog
+  deps        Show optional dependency status
 
 Available on this system: {available}""")
-    typer.echo("\nReport bugs to: https://github.com/roboalchemist/any2md/issues")
-    typer.echo("Home page: https://github.com/roboalchemist/any2md")
+    typer.echo("\nRun 'any2md <command> --help' for command-specific options.")
+    typer.echo("Report bugs: https://github.com/roboalchemist/any2md/issues")
 
 
 if __name__ == "__main__":
