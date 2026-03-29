@@ -19,10 +19,13 @@ from any2md.speaker import (
     _DEFAULT_CATALOG_PATH,
     EMBEDDING_DIM,
     add_speaker,
+    create_group,
     enroll,
     get_all_speakers,
     get_enrollments,
+    get_group,
     get_speaker_by_name,
+    list_groups,
     merge_speakers,
     open_catalog,
     speaker_app,
@@ -455,3 +458,240 @@ class TestMergeSpeakers:
         alice = get_speaker_by_name(conn, "Alice")
         # After merge, mean_distance should be updated (could be 0.0 with identical fake embeddings)
         assert alice["mean_distance"] is not None
+
+
+# ---------------------------------------------------------------------------
+# `any2md speaker group` CLI subcommands
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def group_db(tmp_path) -> tuple:
+    """Return (db_path, conn) with Alice, Bob, Charlie enrolled and a 'Hosts' group."""
+    db_path = str(tmp_path / "group_test.db")
+    conn = open_catalog(db_path)
+    add_speaker(conn, "Alice")
+    add_speaker(conn, "Bob")
+    add_speaker(conn, "Charlie")
+    create_group(conn, "Hosts", member_names=["Alice", "Bob"])
+    return db_path, conn
+
+
+class TestGroupCreate:
+    def test_create_group_success(self, group_db):
+        db_path, conn = group_db
+        result = runner.invoke(speaker_app, ["group", "create", "Panel", "--db", db_path])
+        assert result.exit_code == 0
+        assert "Panel" in result.output
+
+    def test_create_group_with_members(self, group_db):
+        db_path, conn = group_db
+        result = runner.invoke(
+            speaker_app,
+            ["group", "create", "Panel", "--members", "Alice,Charlie", "--db", db_path],
+        )
+        assert result.exit_code == 0
+        group = get_group(conn, "Panel")
+        names = [m["name"] for m in group["members"]]
+        assert "Alice" in names
+        assert "Charlie" in names
+
+    def test_create_group_nonexistent_member_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app,
+            ["group", "create", "Panel", "--members", "Nobody", "--db", db_path],
+        )
+        assert result.exit_code != 0
+
+    def test_create_group_duplicate_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        # "Hosts" already exists
+        result = runner.invoke(speaker_app, ["group", "create", "Hosts", "--db", db_path])
+        assert result.exit_code != 0
+
+    def test_create_group_json_output(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app,
+            ["group", "create", "Panel", "--members", "Alice", "--db", db_path, "--json"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["group"] == "Panel"
+        assert "group_id" in data
+        assert "Alice" in data["members"]
+
+
+class TestGroupList:
+    def test_list_shows_groups(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(speaker_app, ["group", "list", "--db", db_path])
+        assert result.exit_code == 0
+        assert "Hosts" in result.output
+
+    def test_list_empty_shows_message(self, tmp_path):
+        db_path = str(tmp_path / "empty.db")
+        open_catalog(db_path)
+        result = runner.invoke(speaker_app, ["group", "list", "--db", db_path])
+        assert result.exit_code == 0
+        assert "No groups" in result.output
+
+    def test_list_json_output(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(speaker_app, ["group", "list", "--db", db_path, "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        names = [g["name"] for g in data]
+        assert "Hosts" in names
+
+    def test_list_shows_member_count(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(speaker_app, ["group", "list", "--db", db_path])
+        assert "2" in result.output  # Hosts has 2 members
+
+
+class TestGroupShow:
+    def test_show_group_success(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(speaker_app, ["group", "show", "Hosts", "--db", db_path])
+        assert result.exit_code == 0
+        assert "Alice" in result.output
+        assert "Bob" in result.output
+
+    def test_show_nonexistent_group_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(speaker_app, ["group", "show", "NoSuchGroup", "--db", db_path])
+        assert result.exit_code != 0
+
+    def test_show_json_output(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(speaker_app, ["group", "show", "Hosts", "--db", db_path, "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["name"] == "Hosts"
+        assert isinstance(data["members"], list)
+        names = [m["name"] for m in data["members"]]
+        assert "Alice" in names
+        assert "Bob" in names
+
+
+class TestGroupDelete:
+    def test_delete_group_with_force(self, group_db):
+        db_path, conn = group_db
+        result = runner.invoke(speaker_app, ["group", "delete", "Hosts", "--force", "--db", db_path])
+        assert result.exit_code == 0
+        assert get_group(conn, "Hosts") is None
+
+    def test_delete_nonexistent_group_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(speaker_app, ["group", "delete", "NoGroup", "--force", "--db", db_path])
+        assert result.exit_code != 0
+
+    def test_delete_prompts_without_force(self, group_db):
+        db_path, conn = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "delete", "Hosts", "--db", db_path], input="n\n"
+        )
+        assert "Aborted" in result.output
+        assert get_group(conn, "Hosts") is not None
+
+    def test_delete_json_output(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "delete", "Hosts", "--force", "--db", db_path, "--json"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["deleted"] is True
+        assert data["group"] == "Hosts"
+
+    def test_delete_does_not_remove_speakers(self, group_db):
+        db_path, conn = group_db
+        runner.invoke(speaker_app, ["group", "delete", "Hosts", "--force", "--db", db_path])
+        assert get_speaker_by_name(conn, "Alice") is not None
+
+
+class TestGroupAddMember:
+    def test_add_member_success(self, group_db):
+        db_path, conn = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "add-member", "Hosts", "Charlie", "--db", db_path]
+        )
+        assert result.exit_code == 0
+        group = get_group(conn, "Hosts")
+        names = [m["name"] for m in group["members"]]
+        assert "Charlie" in names
+
+    def test_add_member_nonexistent_group_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "add-member", "NoGroup", "Alice", "--db", db_path]
+        )
+        assert result.exit_code != 0
+
+    def test_add_member_nonexistent_speaker_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "add-member", "Hosts", "Nobody", "--db", db_path]
+        )
+        assert result.exit_code != 0
+
+    def test_add_member_json_output(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app,
+            ["group", "add-member", "Hosts", "Charlie", "--db", db_path, "--json"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["group"] == "Hosts"
+        assert data["speaker"] == "Charlie"
+        assert data["action"] == "added"
+
+
+class TestGroupRemoveMember:
+    def test_remove_member_success(self, group_db):
+        db_path, conn = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "remove-member", "Hosts", "Alice", "--db", db_path]
+        )
+        assert result.exit_code == 0
+        group = get_group(conn, "Hosts")
+        names = [m["name"] for m in group["members"]]
+        assert "Alice" not in names
+        assert "Bob" in names
+
+    def test_remove_member_not_in_group_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "remove-member", "Hosts", "Charlie", "--db", db_path]
+        )
+        assert result.exit_code != 0
+
+    def test_remove_member_nonexistent_group_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "remove-member", "NoGroup", "Alice", "--db", db_path]
+        )
+        assert result.exit_code != 0
+
+    def test_remove_member_nonexistent_speaker_exits_nonzero(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app, ["group", "remove-member", "Hosts", "Nobody", "--db", db_path]
+        )
+        assert result.exit_code != 0
+
+    def test_remove_member_json_output(self, group_db):
+        db_path, _ = group_db
+        result = runner.invoke(
+            speaker_app,
+            ["group", "remove-member", "Hosts", "Alice", "--db", db_path, "--json"],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["group"] == "Hosts"
+        assert data["speaker"] == "Alice"
+        assert data["removed"] is True

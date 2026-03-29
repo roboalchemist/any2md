@@ -118,6 +118,22 @@ _MIGRATIONS = [
         merged_at       TEXT NOT NULL
     );
     """,
+    # Migration 2: speaker groups
+    """
+    CREATE TABLE IF NOT EXISTS speaker_groups (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL UNIQUE,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS speaker_group_members (
+        group_id    TEXT NOT NULL REFERENCES speaker_groups(id) ON DELETE CASCADE,
+        speaker_id  TEXT NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
+        added_at    TEXT NOT NULL,
+        PRIMARY KEY (group_id, speaker_id)
+    );
+    """,
 ]
 
 
@@ -475,6 +491,238 @@ def merge_speakers(
         "enrollment_count": new_count,
         "merge_id": merge_id,
     }
+
+
+# ---------------------------------------------------------------------------
+# Speaker groups
+# ---------------------------------------------------------------------------
+
+
+def create_group(
+    conn: sqlite3.Connection,
+    name: str,
+    member_names: Optional[List[str]] = None,
+) -> str:
+    """Create a new speaker group, optionally adding members by name.
+
+    Args:
+        conn: Open catalog connection.
+        name: Group name (must be unique).
+        member_names: Optional list of speaker names to add as initial members.
+                      Raises ValueError if any name is not found.
+
+    Returns:
+        UUID string for the new group.
+
+    Raises:
+        sqlite3.IntegrityError: If a group with this name already exists.
+        ValueError: If any member name is not found in the speaker catalog.
+    """
+    group_id = _new_id()
+    now = _now_iso()
+    conn.execute(
+        "INSERT INTO speaker_groups (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (group_id, name, now, now),
+    )
+    conn.commit()
+    logger.debug("Created speaker group %r with id=%s", name, group_id)
+
+    if member_names:
+        for member_name in member_names:
+            add_group_member(conn, name, member_name)
+
+    return group_id
+
+
+def delete_group(conn: sqlite3.Connection, name: str) -> bool:
+    """Delete a speaker group and its memberships (cascades).
+
+    Args:
+        conn: Open catalog connection.
+        name: Group name to delete.
+
+    Returns:
+        True if the group was deleted, False if no group with that name existed.
+    """
+    cursor = conn.execute("DELETE FROM speaker_groups WHERE name = ?", (name,))
+    conn.commit()
+    deleted = cursor.rowcount > 0
+    if deleted:
+        logger.debug("Deleted speaker group %r", name)
+    return deleted
+
+
+def list_groups(conn: sqlite3.Connection) -> List[Dict]:
+    """List all speaker groups with member counts.
+
+    Args:
+        conn: Open catalog connection.
+
+    Returns:
+        List of dicts with keys: id, name, member_count, created_at, updated_at.
+    """
+    rows = conn.execute(
+        """
+        SELECT g.id, g.name, g.created_at, g.updated_at,
+               COUNT(m.speaker_id) as member_count
+        FROM speaker_groups g
+        LEFT JOIN speaker_group_members m ON g.id = m.group_id
+        GROUP BY g.id, g.name, g.created_at, g.updated_at
+        ORDER BY g.name
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_group(conn: sqlite3.Connection, name: str) -> Optional[Dict]:
+    """Get a group with its member list.
+
+    Args:
+        conn: Open catalog connection.
+        name: Group name.
+
+    Returns:
+        Dict with keys: id, name, created_at, updated_at, members (list of speaker dicts).
+        Returns None if group not found.
+    """
+    row = conn.execute(
+        "SELECT id, name, created_at, updated_at FROM speaker_groups WHERE name = ?",
+        (name,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    group = dict(row)
+    members = conn.execute(
+        """
+        SELECT s.id, s.name, s.enrollment_count, m.added_at
+        FROM speaker_group_members m
+        JOIN speakers s ON s.id = m.speaker_id
+        WHERE m.group_id = ?
+        ORDER BY s.name
+        """,
+        (group["id"],),
+    ).fetchall()
+    group["members"] = [dict(m) for m in members]
+    return group
+
+
+def add_group_member(
+    conn: sqlite3.Connection,
+    group_name: str,
+    speaker_name: str,
+) -> None:
+    """Add a speaker to a group.
+
+    Args:
+        conn: Open catalog connection.
+        group_name: Name of the group.
+        speaker_name: Name of the speaker to add.
+
+    Raises:
+        ValueError: If the group or speaker is not found.
+        sqlite3.IntegrityError: If the speaker is already a member.
+    """
+    group = conn.execute(
+        "SELECT id FROM speaker_groups WHERE name = ?", (group_name,)
+    ).fetchone()
+    if group is None:
+        raise ValueError(f"Group not found: {group_name!r}")
+
+    speaker = get_speaker_by_name(conn, speaker_name)
+    if speaker is None:
+        raise ValueError(f"Speaker not found: {speaker_name!r}")
+
+    now = _now_iso()
+    conn.execute(
+        "INSERT OR IGNORE INTO speaker_group_members (group_id, speaker_id, added_at) VALUES (?, ?, ?)",
+        (group["id"], speaker["id"], now),
+    )
+    conn.commit()
+    logger.debug("Added speaker %r to group %r", speaker_name, group_name)
+
+
+def remove_group_member(
+    conn: sqlite3.Connection,
+    group_name: str,
+    speaker_name: str,
+) -> bool:
+    """Remove a speaker from a group.
+
+    Args:
+        conn: Open catalog connection.
+        group_name: Name of the group.
+        speaker_name: Name of the speaker to remove.
+
+    Returns:
+        True if the member was removed, False if not a member.
+
+    Raises:
+        ValueError: If the group or speaker is not found.
+    """
+    group = conn.execute(
+        "SELECT id FROM speaker_groups WHERE name = ?", (group_name,)
+    ).fetchone()
+    if group is None:
+        raise ValueError(f"Group not found: {group_name!r}")
+
+    speaker = get_speaker_by_name(conn, speaker_name)
+    if speaker is None:
+        raise ValueError(f"Speaker not found: {speaker_name!r}")
+
+    cursor = conn.execute(
+        "DELETE FROM speaker_group_members WHERE group_id = ? AND speaker_id = ?",
+        (group["id"], speaker["id"]),
+    )
+    conn.commit()
+    removed = cursor.rowcount > 0
+    if removed:
+        logger.debug("Removed speaker %r from group %r", speaker_name, group_name)
+    return removed
+
+
+def resolve_speakers_arg(conn: sqlite3.Connection, speakers_str: str) -> List[str]:
+    """Resolve a --speakers argument (possibly containing @group references) to speaker names.
+
+    Splits the comma-separated speakers_str into tokens. Tokens starting with '@'
+    are treated as group names and expanded to their member names. Other tokens are
+    treated as literal speaker names. Duplicates are removed while preserving order.
+
+    Args:
+        conn: Open catalog connection.
+        speakers_str: Comma-separated string of speaker names and @group references.
+                      E.g. "@Podcast Team,ExtraGuest" or "Alice,@Hosts,Bob".
+
+    Returns:
+        Flat, deduplicated list of speaker names.
+
+    Raises:
+        ValueError: If any @group reference is not found in the catalog.
+    """
+    result: List[str] = []
+    seen: set = set()
+
+    for token in speakers_str.split(","):
+        token = token.strip()
+        if not token:
+            continue
+
+        if token.startswith("@"):
+            group_name = token[1:]
+            group = get_group(conn, group_name)
+            if group is None:
+                raise ValueError(f"Group not found: {group_name!r}")
+            for member in group["members"]:
+                n = member["name"]
+                if n not in seen:
+                    result.append(n)
+                    seen.add(n)
+        else:
+            if token not in seen:
+                result.append(token)
+                seen.add(token)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1626,3 +1874,209 @@ def speaker_gallery(
             (e.get("source_file") or "-"),
         ])
     _print_table(rows, ["#", "Source Type", "Segment", "Confidence", "Representative", "Date", "File"])
+
+
+# ---------------------------------------------------------------------------
+# CLI — any2md speaker group subcommand group
+# ---------------------------------------------------------------------------
+
+group_app = typer.Typer(
+    name="group",
+    help="Manage named speaker groups for reusable attendance lists.",
+    no_args_is_help=True,
+)
+speaker_app.add_typer(group_app)
+
+
+@group_app.command("create")
+def group_create(
+    name: str = typer.Argument(..., help="Group name to create."),
+    members: Optional[str] = typer.Option(
+        None, "--members", help="Comma-separated speaker names to add as initial members."
+    ),
+    db: str = typer.Option(_DEFAULT_DB_PATH, "--db", help="Path to speaker catalog database."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON to stdout."),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable verbose logging."),
+) -> None:
+    """Create a named speaker group, optionally seeding it with members."""
+    from any2md.common import setup_logging
+    setup_logging(verbose)
+
+    conn = open_catalog(db if db != _DEFAULT_DB_PATH else None)
+
+    member_names: Optional[List[str]] = None
+    if members:
+        member_names = [m.strip() for m in members.split(",") if m.strip()]
+
+    try:
+        group_id = create_group(conn, name, member_names=member_names)
+    except Exception as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps({
+            "group": name,
+            "group_id": group_id,
+            "members": member_names or [],
+        }))
+    else:
+        count = len(member_names) if member_names else 0
+        typer.echo(f"Created group {name!r} with {count} member(s).")
+
+
+@group_app.command("list")
+def group_list(
+    db: str = typer.Option(_DEFAULT_DB_PATH, "--db", help="Path to speaker catalog database."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON to stdout."),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable verbose logging."),
+) -> None:
+    """List all speaker groups with member counts."""
+    from any2md.common import setup_logging
+    setup_logging(verbose)
+
+    conn = open_catalog(db if db != _DEFAULT_DB_PATH else None)
+    groups = list_groups(conn)
+
+    if json_output:
+        typer.echo(json.dumps(groups, default=str))
+        return
+
+    if not groups:
+        typer.echo("No groups defined. Use: any2md speaker group create")
+        return
+
+    rows = [
+        [
+            g["name"],
+            str(g["member_count"]),
+            _fmt_date(g.get("created_at")),
+            _fmt_date(g.get("updated_at")),
+        ]
+        for g in groups
+    ]
+    _print_table(rows, ["Name", "Members", "Created", "Updated"])
+
+
+@group_app.command("show")
+def group_show(
+    name: str = typer.Argument(..., help="Group name to show."),
+    db: str = typer.Option(_DEFAULT_DB_PATH, "--db", help="Path to speaker catalog database."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON to stdout."),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable verbose logging."),
+) -> None:
+    """Show a group's details and member list."""
+    from any2md.common import setup_logging
+    setup_logging(verbose)
+
+    conn = open_catalog(db if db != _DEFAULT_DB_PATH else None)
+    group = get_group(conn, name)
+    if group is None:
+        typer.echo(f"Group not found: {name!r}", err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(group, default=str))
+        return
+
+    typer.echo(f"Group: {group['name']}")
+    typer.echo(f"  Members: {len(group['members'])}")
+    typer.echo(f"  Created: {_fmt_date(group.get('created_at'))}")
+    if not group["members"]:
+        typer.echo("  (no members)")
+    else:
+        for m in group["members"]:
+            typer.echo(f"    - {m['name']} ({m['enrollment_count']} enrollment(s))")
+
+
+@group_app.command("delete")
+def group_delete(
+    name: str = typer.Argument(..., help="Group name to delete."),
+    force: bool = typer.Option(False, "--force", help="Skip confirmation prompt."),
+    db: str = typer.Option(_DEFAULT_DB_PATH, "--db", help="Path to speaker catalog database."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON to stdout."),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable verbose logging."),
+) -> None:
+    """Delete a speaker group (members are not deleted, only the group)."""
+    from any2md.common import setup_logging
+    setup_logging(verbose)
+
+    conn = open_catalog(db if db != _DEFAULT_DB_PATH else None)
+    existing = get_group(conn, name)
+    if existing is None:
+        typer.echo(f"Group not found: {name!r}", err=True)
+        raise typer.Exit(1)
+
+    if not force:
+        member_count = len(existing["members"])
+        confirmed = typer.confirm(f"Delete group {name!r} ({member_count} member(s))?")
+        if not confirmed:
+            typer.echo("Aborted.")
+            raise typer.Exit(0)
+
+    deleted = delete_group(conn, name)
+
+    if json_output:
+        typer.echo(json.dumps({"group": name, "deleted": deleted}))
+    else:
+        if deleted:
+            typer.echo(f"Deleted group {name!r}.")
+        else:
+            typer.echo(f"Group not found: {name!r}", err=True)
+            raise typer.Exit(1)
+
+
+@group_app.command("add-member")
+def group_add_member(
+    group_name: str = typer.Argument(..., help="Group name."),
+    speaker_name: str = typer.Argument(..., help="Speaker name to add."),
+    db: str = typer.Option(_DEFAULT_DB_PATH, "--db", help="Path to speaker catalog database."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON to stdout."),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable verbose logging."),
+) -> None:
+    """Add a speaker to a group."""
+    from any2md.common import setup_logging
+    setup_logging(verbose)
+
+    conn = open_catalog(db if db != _DEFAULT_DB_PATH else None)
+
+    try:
+        add_group_member(conn, group_name, speaker_name)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps({"group": group_name, "speaker": speaker_name, "action": "added"}))
+    else:
+        typer.echo(f"Added {speaker_name!r} to group {group_name!r}.")
+
+
+@group_app.command("remove-member")
+def group_remove_member(
+    group_name: str = typer.Argument(..., help="Group name."),
+    speaker_name: str = typer.Argument(..., help="Speaker name to remove."),
+    db: str = typer.Option(_DEFAULT_DB_PATH, "--db", help="Path to speaker catalog database."),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output JSON to stdout."),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Enable verbose logging."),
+) -> None:
+    """Remove a speaker from a group."""
+    from any2md.common import setup_logging
+    setup_logging(verbose)
+
+    conn = open_catalog(db if db != _DEFAULT_DB_PATH else None)
+
+    try:
+        removed = remove_group_member(conn, group_name, speaker_name)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps({"group": group_name, "speaker": speaker_name, "removed": removed}))
+    else:
+        if removed:
+            typer.echo(f"Removed {speaker_name!r} from group {group_name!r}.")
+        else:
+            typer.echo(f"{speaker_name!r} is not a member of group {group_name!r}.", err=True)
+            raise typer.Exit(1)

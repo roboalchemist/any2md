@@ -1574,5 +1574,246 @@ class TestIdentifySpeakersFilter(unittest.TestCase):
         self.assertEqual(result["SPEAKER_0"]["name"], "SPEAKER_0")
 
 
+# ---------------------------------------------------------------------------
+# Tests for speaker group CRUD
+# ---------------------------------------------------------------------------
+
+
+def _open_test_catalog_fresh() -> object:
+    """Open a fresh in-memory catalog."""
+    from any2md.speaker import open_catalog
+    return open_catalog(":memory:")
+
+
+class TestSpeakerGroups(unittest.TestCase):
+    """CRUD tests for speaker groups."""
+
+    def setUp(self):
+        from any2md.speaker import open_catalog, add_speaker
+        self.conn = open_catalog(":memory:")
+        # Add some speakers for member tests
+        add_speaker(self.conn, "Alice")
+        add_speaker(self.conn, "Bob")
+        add_speaker(self.conn, "Charlie")
+
+    # --- create_group ---
+
+    def test_create_group_returns_id(self):
+        from any2md.speaker import create_group
+        gid = create_group(self.conn, "Podcast Team")
+        self.assertIsInstance(gid, str)
+        self.assertTrue(len(gid) > 0)
+
+    def test_create_group_duplicate_raises(self):
+        import sqlite3
+        from any2md.speaker import create_group
+        create_group(self.conn, "Hosts")
+        with self.assertRaises(sqlite3.IntegrityError):
+            create_group(self.conn, "Hosts")
+
+    def test_create_group_with_members(self):
+        from any2md.speaker import create_group, get_group
+        create_group(self.conn, "Hosts", member_names=["Alice", "Bob"])
+        group = get_group(self.conn, "Hosts")
+        names = [m["name"] for m in group["members"]]
+        self.assertIn("Alice", names)
+        self.assertIn("Bob", names)
+        self.assertEqual(len(names), 2)
+
+    def test_create_group_with_nonexistent_member_raises(self):
+        from any2md.speaker import create_group
+        with self.assertRaises(ValueError):
+            create_group(self.conn, "Hosts", member_names=["Alice", "Nobody"])
+
+    # --- list_groups ---
+
+    def test_list_groups_empty(self):
+        from any2md.speaker import list_groups
+        groups = list_groups(self.conn)
+        self.assertEqual(groups, [])
+
+    def test_list_groups_returns_all(self):
+        from any2md.speaker import create_group, list_groups
+        create_group(self.conn, "Team A")
+        create_group(self.conn, "Team B")
+        groups = list_groups(self.conn)
+        names = [g["name"] for g in groups]
+        self.assertIn("Team A", names)
+        self.assertIn("Team B", names)
+
+    def test_list_groups_includes_member_count(self):
+        from any2md.speaker import create_group, list_groups
+        create_group(self.conn, "Team A", member_names=["Alice", "Bob"])
+        groups = list_groups(self.conn)
+        team_a = next(g for g in groups if g["name"] == "Team A")
+        self.assertEqual(team_a["member_count"], 2)
+
+    # --- get_group ---
+
+    def test_get_group_not_found_returns_none(self):
+        from any2md.speaker import get_group
+        self.assertIsNone(get_group(self.conn, "NoSuchGroup"))
+
+    def test_get_group_returns_members(self):
+        from any2md.speaker import create_group, get_group
+        create_group(self.conn, "Hosts", member_names=["Alice", "Bob"])
+        group = get_group(self.conn, "Hosts")
+        self.assertEqual(group["name"], "Hosts")
+        self.assertEqual(len(group["members"]), 2)
+
+    def test_get_group_empty_members(self):
+        from any2md.speaker import create_group, get_group
+        create_group(self.conn, "Empty")
+        group = get_group(self.conn, "Empty")
+        self.assertEqual(group["members"], [])
+
+    # --- delete_group ---
+
+    def test_delete_group_returns_true(self):
+        from any2md.speaker import create_group, delete_group
+        create_group(self.conn, "Temp")
+        self.assertTrue(delete_group(self.conn, "Temp"))
+
+    def test_delete_group_not_found_returns_false(self):
+        from any2md.speaker import delete_group
+        self.assertFalse(delete_group(self.conn, "Ghost"))
+
+    def test_delete_group_removes_memberships(self):
+        from any2md.speaker import create_group, delete_group, get_group
+        create_group(self.conn, "Temp", member_names=["Alice"])
+        delete_group(self.conn, "Temp")
+        self.assertIsNone(get_group(self.conn, "Temp"))
+
+    def test_delete_group_does_not_delete_speakers(self):
+        from any2md.speaker import create_group, delete_group, get_speaker_by_name
+        create_group(self.conn, "Temp", member_names=["Alice"])
+        delete_group(self.conn, "Temp")
+        self.assertIsNotNone(get_speaker_by_name(self.conn, "Alice"))
+
+    # --- add_group_member ---
+
+    def test_add_group_member_success(self):
+        from any2md.speaker import create_group, add_group_member, get_group
+        create_group(self.conn, "Panel")
+        add_group_member(self.conn, "Panel", "Charlie")
+        group = get_group(self.conn, "Panel")
+        names = [m["name"] for m in group["members"]]
+        self.assertIn("Charlie", names)
+
+    def test_add_group_member_nonexistent_group_raises(self):
+        from any2md.speaker import add_group_member
+        with self.assertRaises(ValueError):
+            add_group_member(self.conn, "NoGroup", "Alice")
+
+    def test_add_group_member_nonexistent_speaker_raises(self):
+        from any2md.speaker import create_group, add_group_member
+        create_group(self.conn, "Panel")
+        with self.assertRaises(ValueError):
+            add_group_member(self.conn, "Panel", "Nobody")
+
+    def test_add_group_member_idempotent(self):
+        """Adding same member twice should not raise (INSERT OR IGNORE)."""
+        from any2md.speaker import create_group, add_group_member, get_group
+        create_group(self.conn, "Panel")
+        add_group_member(self.conn, "Panel", "Alice")
+        add_group_member(self.conn, "Panel", "Alice")  # should not raise
+        group = get_group(self.conn, "Panel")
+        self.assertEqual(len(group["members"]), 1)
+
+    # --- remove_group_member ---
+
+    def test_remove_group_member_success(self):
+        from any2md.speaker import create_group, remove_group_member, get_group
+        create_group(self.conn, "Panel", member_names=["Alice", "Bob"])
+        removed = remove_group_member(self.conn, "Panel", "Alice")
+        self.assertTrue(removed)
+        group = get_group(self.conn, "Panel")
+        names = [m["name"] for m in group["members"]]
+        self.assertNotIn("Alice", names)
+        self.assertIn("Bob", names)
+
+    def test_remove_group_member_not_member_returns_false(self):
+        from any2md.speaker import create_group, remove_group_member
+        create_group(self.conn, "Panel")
+        removed = remove_group_member(self.conn, "Panel", "Alice")
+        self.assertFalse(removed)
+
+    def test_remove_group_member_nonexistent_group_raises(self):
+        from any2md.speaker import remove_group_member
+        with self.assertRaises(ValueError):
+            remove_group_member(self.conn, "NoGroup", "Alice")
+
+    def test_remove_group_member_nonexistent_speaker_raises(self):
+        from any2md.speaker import create_group, remove_group_member
+        create_group(self.conn, "Panel")
+        with self.assertRaises(ValueError):
+            remove_group_member(self.conn, "Panel", "Nobody")
+
+
+# ---------------------------------------------------------------------------
+# Tests for resolve_speakers_arg
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSpeciakersArg(unittest.TestCase):
+    """Tests for @group resolution in --speakers."""
+
+    def setUp(self):
+        from any2md.speaker import open_catalog, add_speaker, create_group
+        self.conn = open_catalog(":memory:")
+        add_speaker(self.conn, "Alice")
+        add_speaker(self.conn, "Bob")
+        add_speaker(self.conn, "Charlie")
+        create_group(self.conn, "Hosts", member_names=["Alice", "Bob"])
+
+    def test_plain_names_passthrough(self):
+        from any2md.speaker import resolve_speakers_arg
+        result = resolve_speakers_arg(self.conn, "Alice,Charlie")
+        self.assertEqual(result, ["Alice", "Charlie"])
+
+    def test_group_reference_expands(self):
+        from any2md.speaker import resolve_speakers_arg
+        result = resolve_speakers_arg(self.conn, "@Hosts")
+        self.assertEqual(set(result), {"Alice", "Bob"})
+
+    def test_mixed_group_and_names(self):
+        from any2md.speaker import resolve_speakers_arg
+        result = resolve_speakers_arg(self.conn, "@Hosts,Charlie")
+        self.assertIn("Alice", result)
+        self.assertIn("Bob", result)
+        self.assertIn("Charlie", result)
+        self.assertEqual(len(result), 3)
+
+    def test_deduplication(self):
+        from any2md.speaker import resolve_speakers_arg
+        # Alice appears in @Hosts and explicitly — should appear once
+        result = resolve_speakers_arg(self.conn, "@Hosts,Alice")
+        self.assertEqual(result.count("Alice"), 1)
+        self.assertIn("Bob", result)
+
+    def test_nonexistent_group_raises(self):
+        from any2md.speaker import resolve_speakers_arg
+        with self.assertRaises(ValueError):
+            resolve_speakers_arg(self.conn, "@NoSuchGroup")
+
+    def test_empty_string_returns_empty_list(self):
+        from any2md.speaker import resolve_speakers_arg
+        result = resolve_speakers_arg(self.conn, "")
+        self.assertEqual(result, [])
+
+    def test_whitespace_stripped(self):
+        from any2md.speaker import resolve_speakers_arg
+        result = resolve_speakers_arg(self.conn, " Alice , Bob ")
+        self.assertIn("Alice", result)
+        self.assertIn("Bob", result)
+
+    def test_at_group_with_spaces_in_name(self):
+        from any2md.speaker import resolve_speakers_arg, create_group, add_speaker
+        add_speaker(self.conn, "Dave")
+        create_group(self.conn, "Panel Group", member_names=["Dave"])
+        result = resolve_speakers_arg(self.conn, "@Panel Group")
+        self.assertIn("Dave", result)
+
+
 if __name__ == "__main__":
     unittest.main()

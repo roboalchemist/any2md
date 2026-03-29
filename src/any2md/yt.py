@@ -1100,10 +1100,19 @@ def main(
                 logger.warning("--speakers has no effect without --identify; ignoring")
                 speakers = None
 
-            # Parse comma-separated speaker names into a list
+            # Parse comma-separated speaker names (may contain @group references) into a list
             speaker_names: Optional[List[str]] = None
             if speakers and identify:
-                speaker_names = [s.strip() for s in speakers.split(",") if s.strip()]
+                try:
+                    from any2md.speaker import open_catalog as _open_catalog, resolve_speakers_arg
+                    _tmp_conn = _open_catalog(None)
+                    speaker_names = resolve_speakers_arg(_tmp_conn, speakers)
+                except ValueError as exc:
+                    logger.error("--speakers: %s", exc)
+                    raise typer.Exit(code=1)
+                except ImportError:
+                    # wespeaker not installed — fall back to plain split
+                    speaker_names = [s.strip() for s in speakers.split(",") if s.strip()]
 
             if auto_enroll and no_enroll:
                 logger.error("--auto-enroll and --no-enroll are mutually exclusive")
