@@ -67,6 +67,21 @@ enum Command {
         #[arg(long, default_value = "bf16")]
         dtype: String,
     },
+    /// Run the Nemotron encoder on a raw mel tensor (parity debugging)
+    NemotronEncode {
+        /// Model id
+        #[arg(short = 'm', long, default_value = any2md_models::nemotron::DEFAULT_MODEL)]
+        model: String,
+        /// Input tensor: `[dims] + f32le` as written by write_f32_tensor
+        #[arg(long)]
+        input_tensor: PathBuf,
+        /// Output tensor path (encoder features)
+        #[arg(long)]
+        out: PathBuf,
+        /// Optional speaker-probability tensor path
+        #[arg(long)]
+        preds_out: Option<PathBuf>,
+    },
     /// Transcribe with Qwen3-ASR (multilingual)
     Asr {
         /// 16 kHz mono WAV file
@@ -169,6 +184,9 @@ fn main() -> Result<()> {
             chunk_duration,
             &dtype,
         ),
+        Command::NemotronEncode { model, input_tensor, out, preds_out } => {
+            nemotron_encode(&model, &input_tensor, &out, preds_out.as_deref())
+        }
         Command::Asr {
             input,
             model,
@@ -566,4 +584,45 @@ fn transcribe_asr(
         None => println!("{text}"),
     }
     Ok(())
+}
+
+/// Debug hook: encoder-only inference on a dumped mel tensor.
+fn nemotron_encode(
+    model_id: &str,
+    input_path: &Path,
+    out: &Path,
+    preds_out: Option<&Path>,
+) -> Result<()> {
+    let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
+    let config = any2md_models::nemotron::DiarConfig::from_json(&std::fs::read_to_string(&cfg_path)?)?;
+    let dir = cfg_path.parent().context("config has no parent dir")?;
+    let mel = read_f32_tensor(input_path)?;
+    let t = mel.shape()[0];
+    let model = any2md_models::Nemotron::load(dir, config)?;
+    let (feats, len) = model.encode(&mel, Some(t))?;
+    feats.eval()?;
+    write_f32_tensor(out, &feats)?;
+    if let Some(path) = preds_out {
+        let preds = model.speakers.forward(&feats)?;
+        write_f32_tensor(path, &preds)?;
+        eprintln!("speaker preds {:?} -> {}", preds.shape(), path.display());
+    }
+    eprintln!("encoded {t} mel frames -> {len} frames {:?}", feats.shape());
+    Ok(())
+}
+
+/// Read a `[dims] + f32le` tensor blob.
+fn read_f32_tensor(path: &Path) -> Result<any2md_mlx::Array> {
+    let raw = std::fs::read(path)?;
+    let nd = u32::from_le_bytes(raw[0..4].try_into().unwrap()) as usize;
+    let mut dims = Vec::with_capacity(nd);
+    for i in 0..nd {
+        let off = 4 + 4 * i;
+        dims.push(i32::from_le_bytes(raw[off..off + 4].try_into().unwrap()));
+    }
+    let data: Vec<f32> = raw[4 + 4 * nd..]
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    Ok(any2md_mlx::Array::from_slice(&data, &dims))
 }

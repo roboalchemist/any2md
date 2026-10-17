@@ -49,8 +49,17 @@ Diarization notes for the next pass (Nemotron-3 default):
   (`any2md-models/src/diarize.rs`, vectors from
   `rust/parity/diarize_segments.py`).
 
-Remaining: Nemotron-3 streaming port (encoder/head/AOSC), Sortformer streaming
-path, DER gate, packaging/release docs, merge to `main`.
+Nemotron encoder + speaker head: ported and numerically verified
+(`nemotron.rs`). Feature-stacking projection (`encoder.pre_encode.proj`,
+bias-free) -> 31 blocks (LayerNorm, fused qkv `attn.w_qkv`, RoPE head_dim 64,
+boolean key mask, gelu FFN) -> final_norm -> speaker head (encoder_proj
+512->192, subpixel Conv1d 192->1536 with k3/pad1 followed by a reshape that
+restores 8x time, ReLU -> 192 -> 8 -> sigmoid). Parity on a random 800-frame
+mel: encoder max|diff| 9e-6 (rel 1.2e-6), speaker preds max|diff| 7e-9.
+
+Remaining: Nemotron streaming loop (27.2 s windows, 2720-frame central windows
+with 320 right context, AOSC spkcache/fifo compression + global-index mel), the
+Sortformer streaming path, DER gate, packaging/release docs, merge to `main`.
 
 Gates: `make rust-parity` → mel, LID, STT (WER) and ReaderLM parity.
 
