@@ -230,6 +230,45 @@ def cmd_stt(args) -> int:
     return 0
 
 
+def cmd_asr(args) -> int:
+    """Compare native Qwen3-ASR (multilingual) token-for-token with Python."""
+    import subprocess
+
+    from mlx_audio.stt import load_model
+
+    model = load_model(args.model)
+    failures = 0
+    for wav in args.inputs:
+        py_ids = [int(tok) for tok, _ in model.stream_generate(wav, language=args.language, max_tokens=args.max_tokens)]
+        subprocess.run(
+            [
+                args.binary,
+                "asr",
+                wav,
+                "-l",
+                args.language,
+                "--max-tokens",
+                str(args.max_tokens),
+                "--tokens-json",
+                args.tokens_json,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        rs = json.load(open(args.tokens_json, encoding="utf-8"))
+        same = py_ids == rs["tokens"]
+        print(
+            f"{'OK  ' if same else 'FAIL'} {wav.split('/')[-1]:24s} "
+            f"py={len(py_ids)} rs={len(rs['tokens'])} ids_identical={same} text={rs['text'][:40]!r}"
+        )
+        failures += 0 if same else 1
+    if failures:
+        print(f"ASR PARITY FAILED ({failures}/{len(args.inputs)})")
+        return 1
+    print("ASR PARITY OK")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -287,6 +326,19 @@ def main() -> int:
         ],
     )
     stt.set_defaults(func=cmd_stt)
+
+    asr = sub.add_parser("asr", help="compare native Qwen3-ASR with Python")
+    asr.add_argument("--binary", default="rust/target/release/any2md-rs")
+    asr.add_argument("--model", default="mlx-community/Qwen3-ASR-1.7B-4bit")
+    asr.add_argument("--language", default="Chinese")
+    asr.add_argument("--max-tokens", type=int, default=1024)
+    asr.add_argument("--tokens-json", default="/tmp/any2md-parity-asr-tokens.json")
+    asr.add_argument(
+        "inputs",
+        nargs="*",
+        default=["tests/audio/zh_short.wav", "tests/audio/zh_two_speakers.wav"],
+    )
+    asr.set_defaults(func=cmd_asr)
 
     args = parser.parse_args()
     return args.func(args)

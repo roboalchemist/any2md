@@ -113,3 +113,23 @@ pub fn require_snapshot(repo_id: &str) -> Result<PathBuf> {
         })?;
     Ok(any)
 }
+
+/// Like [`get_file`], but tries `fallbacks` (other repos) when the file is
+/// missing from `repo_id`. MLX conversions sometimes omit `tokenizer.json`.
+pub fn get_file_with_fallback(repo_id: &str, file: &str, fallbacks: &[&str]) -> Result<PathBuf> {
+    match get_file(repo_id, file) {
+        Ok(path) => Ok(path),
+        Err(primary) => {
+            for candidate in fallbacks {
+                if *candidate == repo_id {
+                    continue;
+                }
+                if let Ok(path) = get_file(candidate, file) {
+                    tracing::info!(repo = candidate, %file, "using fallback repo for {file}");
+                    return Ok(path);
+                }
+            }
+            Err(primary)
+        }
+    }
+}

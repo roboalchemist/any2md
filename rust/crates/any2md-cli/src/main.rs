@@ -67,6 +67,29 @@ enum Command {
         #[arg(long, default_value = "bf16")]
         dtype: String,
     },
+    /// Transcribe with Qwen3-ASR (multilingual)
+    Asr {
+        /// 16 kHz mono WAV file
+        input: PathBuf,
+        /// Qwen3-ASR model id
+        #[arg(short = 'm', long, default_value = any2md_models::qwen3asr::DEFAULT_MODEL)]
+        model: String,
+        /// Language name or ISO code (e.g. Chinese / zh); omit to auto-detect
+        #[arg(short = 'l', long)]
+        language: Option<String>,
+        /// Maximum tokens to generate
+        #[arg(long, default_value_t = 1024)]
+        max_tokens: usize,
+        /// Print timings and memory to stderr
+        #[arg(long)]
+        stats: bool,
+        /// Write the plain transcript here
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Emit token ids as JSON (parity checks)
+        #[arg(long)]
+        tokens_json: Option<PathBuf>,
+    },
     /// Detect spoken language with Whisper (mirrors --language auto)
     Lid {
         /// 16 kHz mono WAV file
@@ -145,6 +168,23 @@ fn main() -> Result<()> {
             trace_json.as_deref(),
             chunk_duration,
             &dtype,
+        ),
+        Command::Asr {
+            input,
+            model,
+            language,
+            max_tokens,
+            stats,
+            out,
+            tokens_json,
+        } => transcribe_asr(
+            &input,
+            &model,
+            language.as_deref(),
+            max_tokens,
+            stats,
+            out.as_deref(),
+            tokens_json.as_deref(),
         ),
         Command::Lid { input, model, stats } => detect_language(&input, &model, stats),
         Command::Mel { input, kind, out } => dump_mel(&input, &kind, &out),
@@ -444,5 +484,86 @@ fn write_f32_tensor(path: &Path, array: &any2md_mlx::Array) -> Result<()> {
         buf.extend_from_slice(&v.to_le_bytes());
     }
     std::fs::write(path, &buf)?;
+    Ok(())
+}
+
+/// Multilingual transcription via the native Qwen3-ASR port.
+fn transcribe_asr(
+    input: &Path,
+    model_id: &str,
+    language: Option<&str>,
+    max_tokens: usize,
+    stats: bool,
+    out: Option<&Path>,
+    tokens_json: Option<&Path>,
+) -> Result<()> {
+    let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
+    let config = any2md_models::qwen3asr::AsrConfig::from_json(&std::fs::read_to_string(&cfg_path)?)?;
+    let dir = cfg_path.parent().context("config has no parent dir")?;
+    // the MLX 4-bit conversion ships only vocab.json/merges.txt; the upstream
+    // `-hf` repo has an equivalent tokenizer.json (verified id-for-id)
+    let tokenizer_path = any2md_hub::get_file_with_fallback(
+        model_id,
+        "tokenizer.json",
+        &["Qwen/Qwen3-ASR-1.7B-hf", "Qwen/Qwen3-ASR-0.6B-hf"],
+    )?;
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+
+    let audio = any2md_audio::read_wav_16k(input)?;
+    let mel = any2md_audio::whisper_mel(&audio, config.thinker_config.audio_config.num_mel_bins as usize)?;
+
+    let model = any2md_models::Qwen3Asr::load(dir, config.clone())?;
+    let started = std::time::Instant::now();
+    let (features, n_tokens) = model.encode_audio(&mel)?;
+    features.eval()?;
+
+    // language: accept a name or an ISO code, matching the Python helper
+    let lang_code = language.map(|l| any2md_models::qwen3asr::language_name(l, &config.support_languages));
+    let prompt = any2md_models::qwen3asr::build_prompt(n_tokens, lang_code.as_deref());
+    let encoding = tokenizer
+        .encode(prompt, false)
+        .map_err(|e| anyhow::anyhow!("tokenize prompt: {e}"))?;
+    let ids: Vec<i32> = encoding.get_ids().iter().map(|v| *v as i32).collect();
+    let audio_pad_id = 151676u32; // <|audio_pad|>
+
+    let out_ids = model.transcribe(&ids, &features, audio_pad_id, max_tokens)?;
+    let text = tokenizer
+        .decode(&out_ids, true)
+        .map_err(|e| anyhow::anyhow!("decode: {e}"))?
+        .trim()
+        .to_string();
+    let elapsed = started.elapsed().as_secs_f64();
+
+    if stats {
+        let (active, cache, peak) = any2md_mlx::memory_stats()?;
+        let gb = |v: usize| v as f64 / 1024.0 / 1024.0 / 1024.0;
+        eprintln!(
+            "audio_tokens={n_tokens} prompt={} out={} time={elapsed:.2}s peak={:.2}GB active={:.2}GB cache={:.2}GB",
+            ids.len(),
+            out_ids.len(),
+            gb(peak),
+            gb(active),
+            gb(cache),
+        );
+    }
+    if let Some(path) = tokens_json {
+        let report = serde_json::json!({
+            "model": model_id,
+            "audio_tokens": n_tokens,
+            "prompt_tokens": ids.len(),
+            "language": lang_code,
+            "text": text,
+            "tokens": out_ids,
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+    }
+    match out {
+        Some(path) => {
+            std::fs::write(path, text.as_bytes())?;
+            println!("{}", path.display());
+        }
+        None => println!("{text}"),
+    }
     Ok(())
 }

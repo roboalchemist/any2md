@@ -34,11 +34,19 @@ def main() -> int:
     whisper = whisper.astype(mx.float32)
     mx.save_safetensors(str(ASSETS / "mel_whisper_80.safetensors"), {"mel_whisper_80": whisper})
 
+    # Qwen3-ASR: Whisper feature extractor with 128 mels, n_fft 400
+    whisper128 = mel_filters(16_000, 400, 128, norm="slaney", mel_scale=None).astype(mx.float32)
+    mx.save_safetensors(
+        str(ASSETS / "mel_whisper_128.safetensors"), {"mel_whisper_128": whisper128}
+    )
+
     # NeMo family (Parakeet, Sortformer, Nemotron): 128 mels, n_fft 512
     nemo = mel_filters(16_000, 512, 128, norm="slaney", mel_scale="slaney").astype(mx.float32)
     mx.save_safetensors(str(ASSETS / "mel_nemo_512_128.safetensors"), {"mel_nemo_512_128": nemo})
 
     meta = {
+        "mel_whisper_128": {"shape": list(whisper128.shape), "dtype": "float32",
+                            "source": "mlx_audio.utils.mel_filters(16000, 400, 128, norm=slaney, mel_scale=None)"},
         "mel_whisper_80": {"shape": list(whisper.shape), "dtype": "float32",
                            "source": "mlx_audio.utils.mel_filters(16000, 400, 80, norm=slaney, mel_scale=None)"},
         "mel_nemo_512_128": {"shape": list(nemo.shape), "dtype": "float32",
