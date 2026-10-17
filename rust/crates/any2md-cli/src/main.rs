@@ -38,6 +38,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Transcribe a 16 kHz mono WAV with Parakeet TDT
+    Stt {
+        /// 16 kHz mono WAV file
+        input: PathBuf,
+        /// Parakeet model id
+        #[arg(short = 'm', long, default_value = any2md_models::parakeet::DEFAULT_MODEL)]
+        model: String,
+        /// Print timings and memory to stderr
+        #[arg(long)]
+        stats: bool,
+        /// Write the plain transcript here
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Emit token ids as JSON (parity checks)
+        #[arg(long)]
+        tokens_json: Option<PathBuf>,
+    },
     /// Detect spoken language with Whisper (mirrors --language auto)
     Lid {
         /// 16 kHz mono WAV file
@@ -96,6 +113,9 @@ fn main() -> Result<()> {
 
     any2md_mlx::init()?;
     match cli.command {
+        Command::Stt { input, model, stats, out, tokens_json } => {
+            transcribe(&input, &model, stats, out.as_deref(), tokens_json.as_deref())
+        }
         Command::Lid { input, model, stats } => detect_language(&input, &model, stats),
         Command::Mel { input, kind, out } => dump_mel(&input, &kind, &out),
         Command::Html {
@@ -289,5 +309,59 @@ fn detect_language(input: &Path, model_id: &str, stats: bool) -> Result<()> {
         );
     }
     println!("{code} {prob:.4}");
+    Ok(())
+}
+
+fn transcribe(
+    input: &Path,
+    model_id: &str,
+    stats: bool,
+    out: Option<&Path>,
+    tokens_json: Option<&Path>,
+) -> Result<()> {
+    let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
+    let config = any2md_models::ParakeetConfig::from_json(&std::fs::read_to_string(&cfg_path)?)?;
+    let dir = cfg_path.parent().context("config has no parent dir")?;
+
+    let started = std::time::Instant::now();
+    let mel = any2md_models::parakeet::mel_for(input, &config.preprocessor)?;
+    let mel_secs = started.elapsed().as_secs_f64();
+
+    let model = any2md_models::Parakeet::load(dir, config)?;
+    let tokens = model.decode(&mel)?;
+    let text: String = tokens.iter().map(|t| t.text.as_str()).collect();
+    let text = text.trim().to_string();
+
+    if stats {
+        let (active, cache, peak) = any2md_mlx::memory_stats()?;
+        let gb = |v: usize| v as f64 / 1024.0 / 1024.0 / 1024.0;
+        eprintln!(
+            "mel_frames={} tokens={} mel={mel_secs:.2}s total={:.2}s peak={:.2}GB active={:.2}GB cache={:.2}GB",
+            mel.shape()[0],
+            tokens.len(),
+            started.elapsed().as_secs_f64(),
+            gb(peak),
+            gb(active),
+            gb(cache),
+        );
+    }
+    if let Some(path) = tokens_json {
+        let report = serde_json::json!({
+            "model": model_id,
+            "mel_frames": mel.shape()[0],
+            "text": text,
+            "tokens": tokens.iter().map(|t| serde_json::json!({
+                "id": t.id, "text": t.text, "start": t.start, "duration": t.duration,
+            })).collect::<Vec<_>>(),
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+    }
+    match out {
+        Some(path) => {
+            std::fs::write(path, text.as_bytes())?;
+            println!("{}", path.display());
+        }
+        None => println!("{text}"),
+    }
     Ok(())
 }

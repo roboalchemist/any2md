@@ -169,6 +169,50 @@ def cmd_lid(args) -> int:
     return 0
 
 
+def cmd_stt(args) -> int:
+    """Compare native Parakeet transcripts/token ids with the Python model."""
+    import difflib
+    import subprocess
+
+    from mlx_audio.stt import load_model
+    from mlx_audio.stt.utils import load_audio
+
+    model = load_model(args.model)
+    failures = 0
+    for wav in args.inputs:
+        ref = model.generate(load_audio(wav), chunk_duration=None)
+        py_ids = [t.id for s in ref.sentences for t in s.tokens]
+        subprocess.run(
+            [args.binary, "stt", wav, "--tokens-json", args.tokens_json],
+            check=True,
+            capture_output=True,
+        )
+        rs = json.load(open(args.tokens_json, encoding="utf-8"))
+        rs_ids = [t["id"] for t in rs["tokens"]]
+
+        ratio = difflib.SequenceMatcher(None, py_ids, rs_ids).ratio()
+        text_ratio = difflib.SequenceMatcher(None, ref.text.strip(), rs["text"]).ratio()
+        ok = ratio >= args.min_token_similarity and text_ratio >= args.min_text_similarity
+        print(
+            f"{'OK  ' if ok else 'FAIL'} {wav}: python={len(py_ids)} tok / {len(ref.text)} ch, "
+            f"rust={len(rs_ids)} tok / {len(rs['text'])} ch, "
+            f"token_sim={ratio:.4f} text_sim={text_ratio:.4f}"
+        )
+        if not ok:
+            failures += 1
+            diff = list(
+                difflib.unified_diff(
+                    ref.text.strip().splitlines(), rs["text"].splitlines(), "python", "rust", lineterm=""
+                )
+            )
+            print("\n".join(diff[:10]))
+    if failures:
+        print(f"STT PARITY FAILED ({failures}/{len(args.inputs)})")
+        return 1
+    print("STT PARITY OK")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -208,6 +252,23 @@ def main() -> int:
         ],
     )
     lid.set_defaults(func=cmd_lid)
+
+    stt = sub.add_parser("stt", help="compare native Parakeet transcripts with Python")
+    stt.add_argument("--binary", default="rust/target/release/any2md-rs")
+    stt.add_argument("--model", default="mlx-community/parakeet-tdt-0.6b-v3")
+    stt.add_argument("--tokens-json", default="/tmp/any2md-parity-rs-tokens.json")
+    stt.add_argument("--min-token-similarity", type=float, default=0.999)
+    stt.add_argument("--min-text-similarity", type=float, default=0.999)
+    stt.add_argument(
+        "inputs",
+        nargs="*",
+        default=[
+            "/private/var/folders/tk/mprjgmzd2yz1sy_c4ggh4rxw0000gn/T/opencode/voice16k.wav",
+            "tests/audio/yt_interview.wav",
+            "tests/audio/two_speakers.wav",
+        ],
+    )
+    stt.set_defaults(func=cmd_stt)
 
     args = parser.parse_args()
     return args.func(args)
