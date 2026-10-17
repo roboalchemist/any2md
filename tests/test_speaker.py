@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for speaker.py — WeSpeaker ResNet293 speaker embedding extraction
+Tests for speaker.py — WeSpeaker speaker embedding extraction
 and speaker catalog (SQLite + sqlite-vec gallery model).
 
 Run with: python -m pytest tests/test_speaker.py -v

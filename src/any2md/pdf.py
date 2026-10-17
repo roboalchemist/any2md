@@ -36,16 +36,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from any2md.common import build_frontmatter, is_json_mode, write_json_error, write_json_output
+from any2md.common import (
+    build_frontmatter,
+    configure_mlx_memory,
+    is_json_mode,
+    release_mlx_memory,
+    write_json_error,
+    write_json_output,
+)
 
-# fitz (PyMuPDF) — loaded at module level so tests can patch pdf2md.fitz.
+# PyMuPDF — loaded at module level (as `fitz`) so tests can patch pdf.fitz.
+# Import it as `pymupdf`: since PyMuPDF 1.28 `import fitz` prints a deprecation
+# notice to stdout, which corrupts --json output.
 # Falls back gracefully if not installed; ImportError is raised at call time.
 try:
-    import fitz
+    import pymupdf as fitz
     _FITZ_AVAILABLE = True
 except ImportError:
     fitz = None  # type: ignore[assignment]
     _FITZ_AVAILABLE = False
+
+# PyMuPDF's parser reports ("=== Document parser messages ===\nUsing Tesseract
+# for OCR processing.") default to stdout. stdout carries the converted data
+# (including --json), so route them to stderr instead — same rule as logging.
+if _FITZ_AVAILABLE:
+    try:
+        fitz.set_messages(stream=sys.stderr)
+    except Exception:  # older PyMuPDF without set_messages
+        pass
 
 # Pillow — loaded at module level so tests can patch pdf2md.Image.
 try:
@@ -355,9 +373,15 @@ def extract_pages(pdf_path: str, page_indices: Optional[List[int]] = None) -> Li
 
     results = []
     for chunk in chunks:
-        # pymupdf4llm >= 1.27 uses 'page_number', older versions use 'page'
+        # pymupdf4llm >= 1.28 reports 'page_number' 1-based (verified: page index
+        # 3 -> page_number 4); the pre-1.27 key 'page' was 0-based. Only add 1
+        # for the legacy 0-based key, otherwise every page is misnumbered and the
+        # last page's index lands past the end of the document.
         meta = chunk['metadata']
-        page_num = (meta.get('page_number') or meta.get('page', 0)) + 1  # 0-based to 1-based
+        if meta.get('page_number') is not None:
+            page_num = meta['page_number']
+        else:
+            page_num = meta.get('page', 0) + 1  # legacy 0-based -> 1-based
         text = chunk['text'].strip()
         is_thin = len(text) < THIN_PAGE_THRESHOLD
 
@@ -500,6 +524,7 @@ def main(
     """
     if verbose:
         logger.setLevel(logging.DEBUG)
+    configure_mlx_memory()
 
     pdf_path = os.path.abspath(input)
     if not os.path.exists(pdf_path):
@@ -581,6 +606,8 @@ def main(
         content = pages_to_markdown(extracted, metadata=metadata, title=title)
         from pathlib import Path as _Path
         write_json_output(metadata, content, _Path(pdf_path), "pdf", fields)
+        del vlm_model_obj, vlm_processor, vlm_config
+        release_mlx_memory()
         return
 
     # Determine output filename
@@ -601,6 +628,8 @@ def main(
         f.write(content)
 
     logger.info(f"Output saved to: {output_file}")
+    del vlm_model_obj, vlm_processor, vlm_config
+    release_mlx_memory()
 
 
 if __name__ == "__main__":

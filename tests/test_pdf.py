@@ -19,6 +19,7 @@ from any2md.pdf import (
     render_page_as_image,
     extract_page_via_vlm,
     extract_pages_hybrid,
+    extract_pages,
     THIN_PAGE_THRESHOLD,
     VLM_MODEL_DEFAULT,
 )
@@ -43,6 +44,27 @@ class TestPdf2Md(unittest.TestCase):
     def test_parse_page_range_out_of_bounds_ignored(self):
         result = parse_page_range("0,6", 5)
         self.assertEqual(result, [])
+
+    def test_extract_pages_uses_pymupdf4llm_page_numbers(self):
+        """Page numbers come through 1-based, no +1 shift (pymupdf4llm >= 1.28).
+
+        Regression: the code added 1 to the already-1-based 'page_number',
+        so a 10-page PDF reported pages 2..11 and the VLM OCR pass on the
+        last page failed with 'page 10 not in document'.
+        """
+        from unittest.mock import patch
+
+        chunks = [{'metadata': {'page_number': n}, 'text': f'page {n}'} for n in (1, 2, 3)]
+        with patch('pymupdf4llm.to_markdown', return_value=chunks):
+            self.assertEqual([p['page'] for p in extract_pages('x.pdf')], [1, 2, 3])
+
+    def test_extract_pages_supports_legacy_zero_based_key(self):
+        """Older pymupdf4llm exposed 'page' 0-based; keep that path working."""
+        from unittest.mock import patch
+
+        chunks = [{'metadata': {'page': 0}, 'text': 'a'}, {'metadata': {'page': 1}, 'text': 'b'}]
+        with patch('pymupdf4llm.to_markdown', return_value=chunks):
+            self.assertEqual([p['page'] for p in extract_pages('x.pdf')], [1, 2])
 
     def test_pages_to_markdown_basic(self):
         pages = [

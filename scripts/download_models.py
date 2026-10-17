@@ -28,12 +28,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# STT models (Parakeet)
+# STT models (Parakeet) + LID (Whisper-tiny used for --language auto detection)
 STT_MODELS = [
     "mlx-community/parakeet-tdt-0.6b-v3",
     "mlx-community/parakeet-tdt-0.6b-v2",
     "mlx-community/parakeet-tdt-1.1b",
     "mlx-community/parakeet-ctc-0.6b",
+]
+
+# LID (language identification) models — tiny; needed for --language auto
+LID_MODELS = [
+    "mlx-community/whisper-tiny-asr-fp16",
 ]
 
 # VLM models
@@ -47,13 +52,17 @@ READER_MODELS = [
 ]
 
 # Document layout models
+# NOTE: the old mlx-community/SmolDocling-256M-preview-mlx-bf16 repo is gone;
+# the real MLX conversion lives under the docling-project org.
 DOCLING_MODELS = [
-    "mlx-community/SmolDocling-256M-preview-mlx-bf16",
+    "docling-project/SmolDocling-256M-preview-mlx-bf16",
 ]
 
-# Diarization models (Sortformer)
+# Diarization models (Nemotron-3-Diarization is the default; the streaming
+# Sortformer v2.1 is kept for anyone passing it via --diarize-model)
 DIARIZE_MODELS = [
-    "mlx-community/diar_sortformer_4spk-v1-fp32",
+    "mlx-community/Nemotron-3-Diarization",
+    "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16",
 ]
 
 # Qwen3-ASR models (Chinese / multilingual STT)
@@ -67,10 +76,6 @@ QWEN3_ASR_MODELS = [
 QWEN3_ALIGNER_MODELS = [
     "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
 ]
-
-# LID (Language Identification) models
-# TODO: ANY2-29 — fill in once LID model is chosen
-LID_MODELS: list[str] = []
 
 app = typer.Typer(
     help="Download MLX models for 2md tools.",
@@ -191,7 +196,7 @@ def main(
     )] = False,
     diarize: Annotated[bool, typer.Option(
         "--diarize",
-        help="Download Sortformer diarization model.",
+        help="Download Nemotron-3-Diarization (default) + streaming Sortformer models.",
     )] = False,
     asr_zh: Annotated[bool, typer.Option(
         "--asr-zh",
@@ -217,6 +222,10 @@ def main(
         for model_id in STT_MODELS:
             _download_stt_model(model_id)
 
+        logger.info("--- LID models (language detection, --language auto) ---")
+        for model_id in LID_MODELS:
+            _download_stt_model(model_id)
+
     if vlm or all_models:
         logger.info("--- VLM models ---")
         for model_id in VLM_MODELS:
@@ -233,7 +242,7 @@ def main(
             _download_lm_model(model_id)
 
     if diarize or all_models:
-        logger.info("--- Diarization models (Sortformer) ---")
+        logger.info("--- Diarization models (Nemotron-3 + Sortformer) ---")
         for model_id in DIARIZE_MODELS:
             _download_diarize_model(model_id)
 

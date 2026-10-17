@@ -27,7 +27,16 @@ from typing import List, Optional, Tuple
 import typer
 from typing_extensions import Annotated
 
-from any2md.common import build_frontmatter, setup_logging, write_output, is_json_mode, write_json_error, write_json_output
+from any2md.common import (
+    build_frontmatter,
+    configure_mlx_memory,
+    is_json_mode,
+    release_mlx_memory,
+    setup_logging,
+    write_json_error,
+    write_json_output,
+    write_output,
+)
 
 # mlx-vlm imports — loaded at module level so tests can patch img2md.generate etc.
 # Falls back gracefully if mlx-vlm is not installed; ImportError is raised at call time.
@@ -59,7 +68,13 @@ MODEL_ALIASES = {
     "qwen3.5-9b": "mlx-community/Qwen3.5-9B-MLX-4bit",
     "qwen3.5-27b": "mlx-community/Qwen3.5-27B-4bit",
     "qwen3.5-35b": "mlx-community/Qwen3.5-35B-A3B-4bit",
-    "smoldocling": "mlx-community/SmolDocling-256M-4bit",
+    # Newer generations of the same size classes (natively multimodal like
+    # Qwen3.5, same architecture, drop-in for mlx-vlm's qwen3_5 models).
+    "qwen3.6-35b": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "qwen3.8-27b": "mlx-community/Qwen3.8-27B-4bit",
+    # SmolDocling's mlx-community 4-bit repo no longer exists (401) — the real
+    # MLX conversion lives under the docling-project org.
+    "smoldocling": "docling-project/SmolDocling-256M-preview-mlx-bf16",
 }
 
 DEFAULT_MODEL = "mlx-community/Qwen3.5-9B-MLX-4bit"
@@ -357,6 +372,7 @@ def main(
     images in a batch, writing one output file per image.
     """
     setup_logging(verbose)
+    configure_mlx_memory()
 
     if not input_path.exists():
         if is_json_mode():
@@ -440,6 +456,7 @@ def main(
                 })
             _json.dump(results, sys.stdout, indent=2, default=str)
             sys.stdout.write("\n")
+        release_mlx_memory()
         return
 
     output_paths = []
@@ -468,6 +485,8 @@ def main(
     )
     if failed:
         logger.warning("Failed images: %s", [str(p) for p in failed])
+    del vlm_model, processor, config
+    release_mlx_memory()
 
 
 if __name__ == "__main__":

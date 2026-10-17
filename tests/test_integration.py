@@ -40,7 +40,8 @@ PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 READERLM_MODEL = "mlx-community/jinaai-ReaderLM-v2"
 QWEN_MODEL = "mlx-community/Qwen3.5-4B-MLX-4bit"
 QWEN3_ASR_MODEL = "mlx-community/Qwen3-ASR-1.7B-4bit"
-SORTFORMER_MODEL = "mlx-community/diar_sortformer_4spk-v1-fp32"
+# Exercise the default diarization model (Nemotron-3-Diarization) in integration tests
+from any2md.yt import DEFAULT_DIARIZE_MODEL as SORTFORMER_MODEL  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +297,7 @@ def test_zh_two_speakers_diarize():
             output_dir=tmpdir,
             language="Chinese",
             diarize_model_name=SORTFORMER_MODEL,
+            metadata={"title": "zh two speakers"},
         )
         content = Path(output_path).read_text(encoding="utf-8")
 

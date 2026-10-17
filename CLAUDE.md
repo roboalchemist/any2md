@@ -4,7 +4,7 @@
 
 A toolkit for converting any media, document, or data format to markdown with YAML frontmatter. AI inference runs locally on Apple Silicon via MLX. No cloud APIs. 20 converters, 8 zero-dependency (stdlib only).
 
-**Version**: 0.3.0 | **Package**: `any2md` | **Entry point**: `any2md.cli:app`
+**Version**: 0.4.0 | **Package**: `any2md` | **Entry point**: `any2md.cli:app`
 
 ## Project Structure
 
@@ -12,10 +12,10 @@ A toolkit for converting any media, document, or data format to markdown with YA
 any2md/
 ├── src/any2md/
 │   ├── __init__.py      # Package init, __version__ = "0.3.0"
-│   ├── cli.py           # Unified entry point — auto-detect + subcommands (555 lines)
-│   ├── common.py        # Shared: build_frontmatter(), setup_logging(), JSON mode (287 lines)
-│   ├── yt.py            # Audio/video/YouTube transcription + Sortformer diarization (1145 lines)
-│   ├── speaker.py       # WeSpeaker speaker catalog: enrollment, gallery, KNN matching (1591 lines)
+│   ├── cli.py           # Unified entry point — auto-detect + subcommands, lazy converter loading (585 lines)
+│   ├── common.py        # Shared: build_frontmatter(), setup_logging(), JSON mode, MLX memory mgmt (360 lines)
+│   ├── yt.py            # Audio/video/YouTube transcription + diarization (1700 lines)
+│   ├── speaker.py       # WeSpeaker speaker catalog: enrollment, gallery, KNN matching (2082 lines)
 │   ├── pdf.py           # PDF extraction + optional VLM OCR via mlx-vlm (607 lines)
 │   ├── img.py           # Image OCR via Qwen3.5 (mlx-vlm) (474 lines)
 │   ├── web.py           # Web URL → markdown via ReaderLM-v2 (mlx-lm) (465 lines)
@@ -45,7 +45,8 @@ any2md/
 │   ├── test_inference.py    # 14 @pytest.mark.slow (real model inference)
 │   └── test_integration.py  # 9 @pytest.mark.integration (real file fixtures)
 ├── scripts/
-│   ├── download_models.py   # Pre-download MLX models (--stt, --vlm, --reader, --all)
+│   ├── download_models.py   # Pre-download MLX models (--stt, --vlm, --reader, --diarize, --all)
+│   └── memory_profile.py    # Footprint + MLX memory profiler for any command
 │   └── benchmark_models.py  # Benchmark Parakeet STT models, compute RTF
 ├── pyproject.toml       # hatchling build, optional deps groups, entry points
 ├── pytest.ini           # pytest markers config
@@ -53,14 +54,14 @@ any2md/
 └── README.md
 ```
 
-**Total**: ~9,700 lines of source code across 20 modules. 808 tests (8,810 lines).
+**Total**: ~10,000 lines of source code across 20 modules plus memory-profiling and model-download scripts.
 
 ## Key Libraries & Dependencies
 
 | Library | Purpose | Optional Group | llm-code-docs |
 |---------|---------|----------------|---------------|
 | `typer>=0.9.0` | CLI framework (required for all) | core | ✅ `docs/github-scraped/typer/` |
-| `mlx-audio[stt]>=0.4.0` | Parakeet STT + Sortformer diarization | `[stt]` | ❌ |
+| `mlx-audio[stt]>=0.5.9` | Parakeet STT + Nemotron/Sortformer diarization | `[stt]` | ❌ |
 | `yt-dlp>=2023.11.14` | YouTube audio download | `[stt]` | ❌ |
 | `pymupdf4llm>=0.2.0` | PDF text extraction | `[pdf]` | ~`docs/readthedocs/pymupdf/` (base lib) |
 | `mlx-vlm` | Image/PDF OCR via Qwen3.5 | `[img]` | ❌ |
@@ -153,7 +154,7 @@ repo.py: git dir → repomix CLI → markdown with file stats frontmatter
 | `tex.py` | `process_tex_file()` | stdlib only | Pure regex conversion |
 | `man.py` | `process_man_file()` | mandoc (optional) | Regex fallback if mandoc unavailable |
 | `repo.py` | `process_repo_dir()` | repomix (npm) | Thin wrapper (172 lines), requires `repomix` installed globally |
-| `speaker.py` | `match_speaker()` | wespeaker, torch, sqlite-vec | WeSpeaker ResNet293 embeddings, KNN gallery matching |
+| `speaker.py` | `match_speaker()` | wespeaker, torch, sqlite-vec | WeSpeaker ResNet34 (ONNX) embeddings, KNN gallery matching |
 
 ### Model System
 
@@ -161,13 +162,39 @@ repo.py: git dir → repomix CLI → markdown with file stats frontmatter
 |-------|---------|--------------|-----|
 | Parakeet v3 | mlx-audio | `mlx-community/parakeet-tdt-0.6b-v3` | Audio/video STT (English) |
 | Qwen3-ASR-1.7B | mlx-audio | `mlx-community/Qwen3-ASR-1.7B-bf16` | Multilingual STT (30 langs) |
-| Qwen3-ForcedAligner | mlx-audio | `mlx-community/Qwen3-ForcedAligner-0.6B-8bit` | Word-level alignment for diarization |
-| Sortformer | mlx-audio | (auto-configured) | Speaker diarization |
+| Qwen3-ForcedAligner | mlx-audio | `mlx-community/Qwen3-ForcedAligner-0.6B-8bit` | Word-level alignment for diarization (one ASR segment at a time) |
+| Whisper-tiny (LID) | mlx-audio | `mlx-community/whisper-tiny-asr-fp16` | Language detection on the first 30 s window |
+| Nemotron-3-Diarization | mlx-audio (vad) | `mlx-community/Nemotron-3-Diarization` | Speaker diarization (8 speakers, bounded-memory streaming windows) |
+| Legacy Sortformer | mlx-audio (vad) | `mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16` | Diarization via `--diarize-model` (driven through chunked `generate_stream`) |
 | ReaderLM-v2 | mlx-lm | `mlx-community/jinaai-ReaderLM-v2` | HTML/web → markdown |
 | Qwen3.5-9B | mlx-vlm | `mlx-community/Qwen3.5-9B-MLX-4bit` | Image OCR, PDF OCR |
 
 **Model aliases in `yt.py`** — English (fast): `parakeet-v3`, `parakeet-v2`, `parakeet-1.1b`, `parakeet-ctc`; Multilingual (Qwen3-ASR): `qwen3-asr` (alias of `qwen3-asr-bf16`), `qwen3-asr-bf16`, `qwen3-asr-8bit`, `qwen3-asr-4bit`
-**Model aliases in `img.py` / `pdf.py`**: `qwen3.5-4b`, `qwen3.5-9b` (default), `qwen3.5-27b`, `qwen3.5-35b`, `smoldocling`
+**Model aliases in `img.py` / `pdf.py`**: `qwen3.5-4b`, `qwen3.5-9b` (default), `qwen3.5-27b`, `qwen3.5-35b`, `qwen3.6-35b` (→ Qwen3.6-35B-A3B-4bit), `qwen3.8-27b` (→ Qwen3.8-27B-4bit), `smoldocling` (→ `docling-project/SmolDocling-256M-preview-mlx-bf16`)
+
+## Memory Management
+
+any2md keeps memory bounded by design (v0.4.0); large runs used to look like
+leaks because of three compounding issues, all fixed:
+
+1. **MLX buffer cache** — MLX reuses freed Metal buffers from a cache that
+   could grow to the whole memory limit and never shrinks.
+   `common.configure_mlx_memory()` caps it at **2 GB** at CLI startup
+   (override with `ANY2MD_MLX_CACHE_LIMIT_GB`, `0` disables caching), and
+   `common.release_mlx_memory()` (gc + `mx.clear_cache()`) runs between
+   pipeline stages.
+2. **Models stay resident** — the STT model, diarization model, forced
+   aligner, and speaker model are dropped as soon as each stage finishes
+   instead of all living at once.
+3. **Unbounded inputs** — diarization never runs full-clip attention
+   (Nemotron streams internally; Sortformer is driven through chunked
+   `generate_stream()` fed by `_iter_wav_chunks`), the forced aligner aligns
+   one ASR segment at a time, and LID runs on just the first 30 s.
+
+`scripts/memory_profile.py` measures peak/lifetime physical footprint plus
+MLX active/cache memory for any command (add `--repeat N` to check for
+cross-run growth):
+`python scripts/memory_profile.py -- yt meeting.m4a --diarize`
 
 ## Installation
 
@@ -187,9 +214,10 @@ brew install ffmpeg            # Required for audio/video
 npm install -g repomix         # Required for repo subcommand
 
 # Pre-download AI models (Apple Silicon only)
-python scripts/download_models.py --stt      # Parakeet + Sortformer
+python scripts/download_models.py --stt      # Parakeet + Whisper-tiny LID
 python scripts/download_models.py --vlm      # Qwen3.5 for img/pdf --ocr
 python scripts/download_models.py --reader   # ReaderLM-v2 for web/html
+python scripts/download_models.py --diarize  # Nemotron-3 + streaming Sortformer
 python scripts/download_models.py --all      # Everything
 ```
 
@@ -203,7 +231,7 @@ python scripts/download_models.py --all      # Everything
 ## Testing
 
 - **Framework**: `unittest.TestCase` classes, collected and run via `pytest`
-- **Test count**: 808 tests across 19 test files
+- **Test count**: 1105 unit tests + 16 slow-inference tests + 11 integration tests across 21 test files
 - **Run all unit tests**: `python -m pytest tests/`
 - **Run specific file**: `python -m pytest tests/test_csv.py -v`
 - **Slow tests** (real inference, >10s): `python -m pytest -m slow -v -s`
@@ -276,4 +304,4 @@ any2md completion fish      # Output fish completion script
 
 ## Project History
 
-Originally `yt2srt` on `lightning-whisper-mlx`. Migrated to `yt2md` on `mlx-audio` with Parakeet, rewritten from argparse to typer. Then expanded from 2 tools (yt2md + pdf2md) to 20 converters as a proper Python package (`src/any2md/`) with unified CLI, optional dependency groups, and 808 tests. v0.2.0 added quality & polish pass; v0.2.3 added `repo` subcommand via repomix; v0.3.0 added `speaker` catalog, `docs`/`completion` subcommands, `--silent` flag, and `--identify`/`--auto-enroll`/`--no-enroll` flags on `yt`; v0.3.4 added Qwen3-ASR-1.7B multilingual STT + Whisper-tiny LID auto-routing + `--language` / `--aligner-model` flags (ANY2-28 series).
+Originally `yt2srt` on `lightning-whisper-mlx`. Migrated to `yt2md` on `mlx-audio` with Parakeet, rewritten from argparse to typer. Then expanded from 2 tools (yt2md + pdf2md) to 20 converters as a proper Python package (`src/any2md/`) with unified CLI, optional dependency groups, and 808 tests. v0.2.0 added quality & polish pass; v0.2.3 added `repo` subcommand via repomix; v0.3.0 added `speaker` catalog, `docs`/`completion` subcommands, `--silent` flag, and `--identify`/`--auto-enroll`/`--no-enroll` flags on `yt`; v0.3.4 added Qwen3-ASR-1.7B multilingual STT + Whisper-tiny LID auto-routing + `--language` / `--aligner-model` flags (ANY2-28 series). v0.4.0 (ANY2-36) upgraded all dependencies to latest (mlx 0.32, mlx-audio 0.5.9, mlx-vlm 0.7.8, mlx-lm 0.32, transformers 5.20), fixed the memory issues behind intermittent leaks (MLX cache cap + stage-wise model release + bounded diarization/alignment/LID), switched diarization to Nemotron-3-Diarization, and added Qwen3.6/Qwen3.8 OCR aliases.

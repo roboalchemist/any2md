@@ -479,6 +479,7 @@ class TestMergeDiarizationSegments(unittest.TestCase):
         chunk2 = MagicMock()
         chunk2.segments = [FakeDiarizationSegment(5.0, 10.0, 1)]
         mock_model.generate_stream.return_value = iter([chunk1, chunk2])
+        mock_model._any2md_model_name = "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16"
 
         result = diarize("/fake/audio.wav", mock_model)
 
@@ -488,6 +489,40 @@ class TestMergeDiarizationSegments(unittest.TestCase):
         # Verify result has merged segments from both chunks
         self.assertEqual(result.num_speakers, 2)
         self.assertEqual(len(result.segments), 2)
+
+    def test_diarize_nemotron_uses_full_clip_generate(self):
+        """Nemotron-3-Diarization goes through generate() — it streams internally."""
+        from unittest.mock import MagicMock
+
+        from any2md.yt import diarize
+
+        mock_model = MagicMock()
+        mock_model._any2md_model_name = "mlx-community/Nemotron-3-Diarization"
+        mock_model.generate.return_value = MagicMock(
+            segments=[FakeDiarizationSegment(0.0, 10.0, 0), FakeDiarizationSegment(10.0, 20.0, 1)],
+            num_speakers=2,
+        )
+
+        result = diarize("/fake/audio.wav", mock_model)
+
+        mock_model.generate.assert_called_once()
+        mock_model.generate_stream.assert_not_called()
+        self.assertEqual(result.num_speakers, 2)
+
+    def test_default_diarize_model_is_nemotron(self):
+        """The default diarization model is Nemotron-3-Diarization (8 speakers)."""
+        from any2md.yt import DEFAULT_DIARIZE_MODEL
+        self.assertEqual(DEFAULT_DIARIZE_MODEL, "mlx-community/Nemotron-3-Diarization")
+
+    def test_dispatch_helpers(self):
+        from any2md.yt import _is_nemotron_diar_model, _is_sortformer_diar_model
+
+        self.assertTrue(_is_nemotron_diar_model("mlx-community/Nemotron-3-Diarization"))
+        self.assertTrue(_is_nemotron_diar_model("mlx-community/Nemotron-3-Diarization-8bit"))
+        self.assertFalse(_is_nemotron_diar_model("mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32"))
+        self.assertTrue(_is_sortformer_diar_model("mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16"))
+        self.assertTrue(_is_sortformer_diar_model("mlx-community/diar_sortformer_4spk-v1-fp32"))
+        self.assertFalse(_is_sortformer_diar_model("mlx-community/Nemotron-3-Diarization"))
 
 
 # ---------------------------------------------------------------------------
@@ -1757,7 +1792,9 @@ class TestForcedAlignerOutOfCoverage(unittest.TestCase):
     def test_in_coverage_language_does_call_aligner(self):
         """When language='zh' (in ALIGNER_LANGS), load_forced_aligner IS called."""
         from unittest.mock import patch, MagicMock
+        from types import SimpleNamespace
         import tempfile, os
+        import numpy as np
         from any2md.yt import transcribe, DEFAULT_DIARIZE_MODEL
 
         fake_result = self._make_fake_result()
@@ -1774,9 +1811,11 @@ class TestForcedAlignerOutOfCoverage(unittest.TestCase):
         fake_diar_output.num_speakers = 1
 
         fake_aligner = MagicMock()
-        # aligner.generate returns something with words = list of dicts
-        fake_aligner.generate.return_value = MagicMock(words=[
-            {"start": 0.0, "end": 1.0, "text": "你好"}
+        # _align_words_per_segment() calls aligner.generate(clip, text=..., language=...)
+        # once per ASR segment and iterates ForcedAlignItem objects (.start_time/.end_time/.text)
+        fake_aligner.generate.return_value = SimpleNamespace(items=[
+            SimpleNamespace(start_time=0.0, end_time=1.0, text="你"),
+            SimpleNamespace(start_time=1.0, end_time=2.0, text="好"),
         ])
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1786,6 +1825,7 @@ class TestForcedAlignerOutOfCoverage(unittest.TestCase):
             with patch("mlx_audio.stt.load_model", return_value=fake_stt_model), \
                  patch("any2md.yt.load_diarization_model", return_value=MagicMock()), \
                  patch("any2md.yt.diarize", return_value=fake_diar_output), \
+                 patch("any2md.yt._load_wav_16k", return_value=np.zeros(32000, dtype=np.float32)), \
                  patch("any2md.yt.load_forced_aligner", return_value=fake_aligner) as mock_loader:
 
                 transcribe(
@@ -1798,7 +1838,7 @@ class TestForcedAlignerOutOfCoverage(unittest.TestCase):
 
             # Aligner loader SHOULD be called
             mock_loader.assert_called_once()
-            # And aligner.generate SHOULD be called
+            # And aligner.generate SHOULD be called (once per ASR segment — 1 here)
             fake_aligner.generate.assert_called_once()
 
     def test_parakeet_model_never_calls_aligner(self):

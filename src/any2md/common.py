@@ -10,6 +10,7 @@ Contains shared code used across yt2md, pdf2md, and future tools:
 - load_vlm: Stub for future VLM tools
 """
 
+import gc
 import json
 import logging
 import os
@@ -271,6 +272,68 @@ def write_json_output(
         output = _filter_fields(output, fields)
     json.dump(output, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
+
+
+# ---------------------------------------------------------------------------
+# MLX memory management
+# ---------------------------------------------------------------------------
+
+# MLX keeps freed Metal buffers in a reuse cache that, by default, may grow up
+# to the whole memory limit. Across model loads and variable-sized chunks/pages
+# it ends up holding many GB nobody uses, which shows up as a "leak". Cap it;
+# override with ANY2MD_MLX_CACHE_LIMIT_GB (0 disables the cache entirely).
+DEFAULT_MLX_CACHE_LIMIT_GB = 2.0
+
+
+def _mlx_core():
+    """Return mlx.core only if it is already imported (never pull it in here).
+
+    Importing mlx.core costs ~150 ms, which would be paid by converters that
+    never touch MLX (csv, data, db, ...). Every MLX-using path has it loaded
+    by the time it calls into this module.
+    """
+    mx = sys.modules.get("mlx.core")
+    return mx
+
+
+def _mlx_fn(mx, name: str):
+    """Find an MLX memory function (top-level since 0.24, mx.metal.* before)."""
+    fn = getattr(mx, name, None)
+    if fn is None:
+        fn = getattr(getattr(mx, "metal", None), name, None)
+    return fn
+
+
+def configure_mlx_memory() -> None:
+    """Cap MLX's buffer cache. Idempotent; a no-op when MLX isn't loaded yet."""
+    mx = _mlx_core()
+    if mx is None:
+        return
+    raw = os.environ.get("ANY2MD_MLX_CACHE_LIMIT_GB")
+    limit_gb = DEFAULT_MLX_CACHE_LIMIT_GB
+    if raw:
+        try:
+            limit_gb = max(float(raw), 0.0)
+        except ValueError:
+            logging.getLogger(__name__).warning("Ignoring invalid ANY2MD_MLX_CACHE_LIMIT_GB=%r", raw)
+    set_cache_limit = _mlx_fn(mx, "set_cache_limit")
+    if set_cache_limit is not None:
+        set_cache_limit(int(limit_gb * 1024 ** 3))
+
+
+def release_mlx_memory() -> None:
+    """Collect unreferenced objects and hand MLX's cached buffers back to the OS.
+
+    Call after dropping the last reference to a model or between batch items;
+    without it the freed weights/activations stay in MLX's cache.
+    """
+    gc.collect()
+    mx = _mlx_core()
+    if mx is None:
+        return
+    clear_cache = _mlx_fn(mx, "clear_cache")
+    if clear_cache is not None:
+        clear_cache()
 
 
 # ---------------------------------------------------------------------------

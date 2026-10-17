@@ -56,3 +56,5 @@ benchmark-results/
 # Except test audio files
 !tests/audio/*.wav
 !tests/audio/*.mp3
+# ...but never the 82-min long-audio fixture (downloaded on demand by tests)
+tests/audio/longform_ep64_gay_talese.mp3

@@ -43,6 +43,9 @@ READERLM_MODEL = "mlx-community/jinaai-ReaderLM-v2"
 # Use 4B as the smallest viable Qwen3.5 model (all sizes are natively multimodal).
 QWEN_VL_MODEL = "mlx-community/Qwen3.5-4B-MLX-4bit"
 PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+# New default diarization model (Nemotron-3-Diarization, 8 speakers)
+from any2md.yt import DEFAULT_DIARIZE_MODEL as NEMOTRON_MODEL  # noqa: E402
+# Legacy model kept for regression coverage of the Sortformer streaming path
 SORTFORMER_MODEL = "mlx-community/diar_sortformer_4spk-v1-fp32"
 # Qwen3-ASR — smallest quantised variant for fast test runs
 QWEN3_ASR_MODEL = "mlx-community/Qwen3-ASR-1.7B-4bit"
@@ -445,14 +448,15 @@ def _download_long_test_audio(output_dir: str) -> str:
 
 @pytest.mark.slow
 def test_diarize_long_audio_streaming():
-    """Diarization on 82-minute podcast completes without OOM via streaming.
+    """Diarization on 82-minute podcast completes without OOM.
 
-    This is a regression test for the Metal memory allocation failure:
+    Regression test for the Metal memory allocation failure:
     '[metal::malloc] Attempting to allocate 83404284800 bytes which is greater
     than the maximum allowed buffer size of 77309411328 bytes.'
 
-    The fix uses model.generate_stream() with chunked processing instead of
-    model.generate() which tries to process the entire file at once.
+    The default (Nemotron-3-Diarization) processes the clip through bounded
+    internal streaming windows; the legacy Sortformer models are driven
+    through chunked generate_stream() with the model's own AOSC state.
 
     Uses Longform Podcast Episode 64 (Gay Talese interview, ~82 min, 3 speakers)
     from archive.org (public domain).
@@ -471,8 +475,8 @@ def test_diarize_long_audio_streaming():
         # Convert to 16kHz WAV for diarization
         wav_path = convert_audio_for_whisper(mp3_path, tmpdir)
 
-        model = load_diarization_model(SORTFORMER_MODEL)
-        # This would OOM with model.generate() on files this long
+        model = load_diarization_model(NEMOTRON_MODEL)
+        # This would OOM with the old full-clip Sortformer generate() path
         output = diarize(wav_path, model)
 
     assert output.segments is not None
@@ -502,7 +506,7 @@ def test_diarize_long_audio_end_to_end():
         metadata = {"title": "Longform Podcast - Gay Talese Interview"}
         output_path = transcribe(
             wav_path, PARAKEET_MODEL, output_dir=tmpdir,
-            metadata=metadata, diarize_model_name=SORTFORMER_MODEL,
+            metadata=metadata, diarize_model_name=NEMOTRON_MODEL,
         )
         content = Path(output_path).read_text()
 
