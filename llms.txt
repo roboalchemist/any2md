@@ -46,7 +46,7 @@ any2md yt <input>
   # Requires: mlx-audio[stt], yt-dlp (YouTube), ffmpeg
   --model NAME             # English: parakeet-v3/v2/1.1b/ctc; Multilingual: qwen3-asr (alias of qwen3-asr-bf16), qwen3-asr-bf16/8bit/4bit
   --language LANG          # Language code or name (default: 'auto' — detect from audio). E.g. 'zh', 'Chinese', 'ja'.
-  --diarize                # Enable Sortformer speaker diarization
+  --diarize                # Enable speaker diarization (Nemotron-3-Diarization by default)
   --aligner-model NAME     # Forced-aligner for word timestamps (Qwen3-ASR + --diarize only)
   --format md|srt|txt      # Output format (default: md)
   --chunk-duration SECS    # Split long audio into chunks

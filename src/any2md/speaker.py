@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-speaker.py - WeSpeaker ResNet293 speaker embedding extraction + speaker catalog
+speaker.py - WeSpeaker speaker embedding extraction + speaker catalog
 
 Extracts 256-d L2-normalized speaker embeddings from audio segments using
-WeSpeaker ResNet293 via wespeakerruntime (ONNX Runtime — no PyTorch required).
+WeSpeaker ResNet34 (English/VoxCeleb) via wespeakerruntime (ONNX Runtime + torchaudio).
 
 Also provides a persistent SQLite speaker catalog at ~/.config/any2md/speakers.db
 backed by sqlite-vec for fast KNN search (gallery model with multiple embeddings
@@ -62,7 +62,7 @@ _DEFAULT_CATALOG_PATH = Path.home() / ".config" / "any2md" / "speakers.db"
 # Module-level connection cache keyed by resolved path string
 _connections: Dict[str, sqlite3.Connection] = {}
 
-# Embedding dimension for WeSpeaker ResNet293
+# Embedding dimension for the WeSpeaker ONNX model (ResNet34-LM)
 EMBEDDING_DIM = 256
 
 # Gallery maintenance defaults

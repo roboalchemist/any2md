@@ -270,6 +270,19 @@ def _phrasify_word_alignment(words, max_phrase_s: float = 15.0, gap_threshold_s:
     # CJK sentence-end + Latin sentence-end + comma as softer fallback
     PUNCT = set("。！？.!?")
 
+    def _is_cjk(ch: str) -> bool:
+        return "\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf"
+
+    def _join(words: list) -> str:
+        """Join words; CJK characters concatenate without spaces."""
+        out = ""
+        for t in words:
+            if out and (_is_cjk(out[-1]) or (t and _is_cjk(t[0]))):
+                out += t
+            else:
+                out = f"{out} {t}" if out else t
+        return out
+
     phrases = []
     cur: Dict = {"start": None, "end": None, "text": []}
 
@@ -279,7 +292,7 @@ def _phrasify_word_alignment(words, max_phrase_s: float = 15.0, gap_threshold_s:
             phrases.append({
                 "start": cur["start"],
                 "end": cur["end"],
-                "text": " ".join(cur["text"]).strip(),
+                "text": _join(cur["text"]).strip(),
             })
         cur = {"start": None, "end": None, "text": []}
 
@@ -895,6 +908,28 @@ def load_diarization_model(model_name: str = DEFAULT_DIARIZE_MODEL):
     return model
 
 
+def _iter_wav_chunks(wav_path: str, chunk_duration: float):
+    """Yield ~chunk_duration float32 sample blocks from a 16 kHz mono WAV.
+
+    Reading incrementally (stdlib wave) keeps the whole recording out of
+    memory, so Sortformer's streaming path never materializes full-file mel
+    features or their ConvSubsampling intermediates (a ~14 GB transient for
+    an 82-minute clip).
+    """
+    import wave as _wave
+
+    import numpy as np
+
+    with _wave.open(wav_path, "rb") as w:
+        sr = w.getframerate()
+        step = max(int(chunk_duration * sr), 1)
+        while True:
+            frames = w.readframes(step)
+            if not frames:
+                break
+            yield np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 def diarize(audio_path: str, model, chunk_duration: float = DEFAULT_DIARIZE_CHUNK_DURATION):
     """Run speaker diarization on audio file with memory bounded by design.
 
@@ -904,15 +939,16 @@ def diarize(audio_path: str, model, chunk_duration: float = DEFAULT_DIARIZE_CHUN
       bounded internal windows with an Arrival-Order Speaker Cache — safe for
       recordings of any length, stable speaker IDs, up to 8 speakers.
     - Sortformer (streaming v2.1 or offline v1): the full-clip ``generate()``
-      runs O(n²) self-attention and OOMs/stalls on long audio, so drive
-      ``generate_stream(chunk_duration=...)`` instead and merge the per-chunk
-      segments. mlx-audio (>= 0.5.6) threads the streaming state across
-      chunks, so speaker IDs stay stable.
+      runs O(n²) self-attention and OOMs/stalls on long audio, and even
+      ``generate_stream(path)`` pre-encodes the whole file in one pass
+      (~14 GB transient for 82 min). Drive ``generate_stream()`` with an
+      iterable of WAV chunks instead: mlx-audio threads its streaming state
+      across the chunks (stable speaker IDs) while memory stays flat.
 
     Args:
-        audio_path: Path to the audio file.
+        audio_path: Path to the audio file (16 kHz mono WAV).
         model: Loaded diarization model from `load_diarization_model`.
-        chunk_duration: Chunk size for the Sortformer streaming path.
+        chunk_duration: Chunk size in seconds for the Sortformer streaming path.
 
     Returns:
         DiarizationOutput with merged speaker segments.
@@ -933,12 +969,15 @@ def diarize(audio_path: str, model, chunk_duration: float = DEFAULT_DIARIZE_CHUN
         )
         return result
 
-    logger.info("Running diarization on: %s (Sortformer streaming, chunk_duration=%.1fs)", audio_path, chunk_duration)
+    logger.info(
+        "Running diarization on: %s (Sortformer streaming, chunk_duration=%.1fs)",
+        audio_path, chunk_duration,
+    )
     start = time.time()
 
     all_segments = []
     num_chunks = 0
-    for chunk_result in model.generate_stream(audio_path, chunk_duration=chunk_duration):
+    for chunk_result in model.generate_stream(_iter_wav_chunks(audio_path, chunk_duration)):
         all_segments.extend(chunk_result.segments)
         num_chunks += 1
 
@@ -1612,7 +1651,9 @@ def main(
     )] = False,
     diarize_model: Annotated[str, typer.Option(
         "--diarize-model",
-        help="Sortformer diarization model ID.",
+        help="Diarization model ID. Default: Nemotron-3-Diarization (8 speakers, "
+             "bounded-memory streaming). Legacy Sortformer models (diar_*_sortformer_*) "
+             "also work and are processed in memory-bounded chunks.",
     )] = DEFAULT_DIARIZE_MODEL,
     aligner_model: Annotated[str, typer.Option(
         "--aligner-model",
@@ -1622,7 +1663,7 @@ def main(
     )] = DEFAULT_ALIGNER_MODEL,
     identify: Annotated[bool, typer.Option(
         "--identify/--no-identify",
-        help="Extract WeSpeaker ResNet293 speaker embeddings per diarized segment. Requires --diarize and any2md[speaker].",
+        help="Extract WeSpeaker speaker embeddings per diarized segment. Requires --diarize and any2md[speaker].",
     )] = False,
     auto_enroll: Annotated[bool, typer.Option(
         "--auto-enroll",

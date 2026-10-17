@@ -67,8 +67,8 @@ any2md nb notebook.ipynb --no-outputs
 
 | Subcommand | Input | Engine | Dependencies |
 |------------|-------|--------|-------------|
-| `audio` | MP3, WAV, FLAC, OGG, AAC, M4A | Parakeet STT (English) / Qwen3-ASR (multilingual) + Sortformer diarization | mlx-audio |
-| `video` | MP4, MKV, AVI, MOV, WebM | Parakeet STT (English) / Qwen3-ASR (multilingual) + Sortformer diarization | mlx-audio |
+| `audio` | MP3, WAV, FLAC, OGG, AAC, M4A | Parakeet STT (English) / Qwen3-ASR (multilingual) + Nemotron diarization | mlx-audio |
+| `video` | MP4, MKV, AVI, MOV, WebM | Parakeet STT (English) / Qwen3-ASR (multilingual) + Nemotron diarization | mlx-audio |
 | `yt` | YouTube URLs + all audio/video | Parakeet STT (English) / Qwen3-ASR (multilingual) + yt-dlp download | mlx-audio, yt-dlp |
 | `pdf` | PDF files | pymupdf4llm + optional Qwen3.5 VLM OCR | pymupdf4llm |
 | `img` | JPEG, PNG, GIF, BMP, WebP, TIFF | Qwen3.5 (mlx-vlm) | mlx-vlm |
@@ -121,7 +121,7 @@ All tools produce YAML frontmatter with source metadata followed by the converte
 ```bash
 python scripts/download_models.py --stt       # Parakeet (audio/video, English)
 python scripts/download_models.py --asr-zh    # Qwen3-ASR + ForcedAligner + LID (~9.4 GB, multilingual)
-python scripts/download_models.py --diarize   # Sortformer (--diarize)
+python scripts/download_models.py --diarize   # Nemotron-3 diarization (--diarize)
 python scripts/download_models.py --vlm       # Qwen3.5 (img, pdf --ocr)
 python scripts/download_models.py --reader    # ReaderLM-v2 (web, html)
 python scripts/download_models.py --all       # Everything
