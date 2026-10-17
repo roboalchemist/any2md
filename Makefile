@@ -1,18 +1,21 @@
 .PHONY: test test-unit test-integration test-slow test-all lint format install rust-build rust-test rust-parity rust-parity-long rust-install
 
+# Prefer the project venv so tests spawn the interpreter that has any2md installed.
+PYTHON := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python)
+
 test:
-	python -m pytest tests/ -x -q --ignore=tests/test_inference.py --ignore=tests/test_integration.py
+	$(PYTHON) -m pytest tests/ -x -q --ignore=tests/test_inference.py --ignore=tests/test_integration.py
 
 test-unit: test
 
 test-integration:
-	python -m pytest tests/test_integration.py -m integration -v
+	$(PYTHON) -m pytest tests/test_integration.py -m integration -v
 
 test-slow:
-	python -m pytest tests/test_inference.py -m slow -v -s
+	$(PYTHON) -m pytest tests/test_inference.py -m slow -v -s
 
 test-all:
-	python -m pytest tests/ -v
+	$(PYTHON) -m pytest tests/ -v
 
 lint:
 	ruff check src/ tests/
