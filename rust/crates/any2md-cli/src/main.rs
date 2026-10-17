@@ -38,6 +38,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Detect spoken language with Whisper (mirrors --language auto)
+    Lid {
+        /// 16 kHz mono WAV file
+        input: PathBuf,
+        /// Whisper model id
+        #[arg(short = 'm', long, default_value = any2md_models::whisper::DEFAULT_LID_MODEL)]
+        model: String,
+        /// Also print the full 30 s window mel shape
+        #[arg(long)]
+        stats: bool,
+    },
     /// Dump log-mel features for a 16 kHz mono WAV (parity/verification helper)
     Mel {
         /// 16 kHz mono WAV file
@@ -85,6 +96,7 @@ fn main() -> Result<()> {
 
     any2md_mlx::init()?;
     match cli.command {
+        Command::Lid { input, model, stats } => detect_language(&input, &model, stats),
         Command::Mel { input, kind, out } => dump_mel(&input, &kind, &out),
         Command::Html {
             input,
@@ -249,5 +261,33 @@ fn dump_mel(input: &Path, kind: &str, out: &Path) -> Result<()> {
     }
     std::fs::write(out, &buf).with_context(|| format!("write {}", out.display()))?;
     eprintln!("mel {:?} -> {}", shape, out.display());
+    Ok(())
+}
+
+fn detect_language(input: &Path, model_id: &str, stats: bool) -> Result<()> {
+    let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
+    let config = any2md_models::WhisperConfig::from_json(&std::fs::read_to_string(&cfg_path)?)?;
+    let dir = cfg_path.parent().context("config has no parent dir")?;
+
+    let audio = any2md_audio::read_wav_16k(input)?;
+    let mel = any2md_audio::whisper_mel(&audio, config.num_mel_bins as usize)?;
+    let mel = any2md_audio::pad_or_trim(&mel, any2md_models::whisper::N_FRAMES, 0)?;
+    mel.eval()?;
+
+    let started = std::time::Instant::now();
+    let model = any2md_models::Whisper::load(dir, config)?;
+    let (token, prob) = model.detect_language(&mel)?;
+    let code = any2md_models::whisper::lang_token_to_code(token).unwrap_or("??");
+    if stats {
+        eprintln!(
+            "mel={:?} token={} lang={} prob={:.4} time={:.2}s",
+            mel.shape(),
+            token,
+            code,
+            prob,
+            started.elapsed().as_secs_f64()
+        );
+    }
+    println!("{code} {prob:.4}");
     Ok(())
 }

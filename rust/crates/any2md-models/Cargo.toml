@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 any2md-mlx = { workspace = true }
 any2md-hub = { workspace = true }
+any2md-audio = { workspace = true }
 mlx-rs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

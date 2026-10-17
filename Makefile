@@ -34,6 +34,7 @@ rust-test:
 rust-parity: rust-build
 	.venv/bin/python rust/parity/parity.py mel --input tests/audio/yt_interview.wav --kind whisper
 	.venv/bin/python rust/parity/parity.py mel --input tests/audio/zh_short.wav --kind nemo
+	.venv/bin/python rust/parity/parity.py lid
 	.venv/bin/python rust/parity/parity.py reference readerlm --input tests/fixtures/sample.html \
 		--max-tokens 64 --out /tmp/any2md-parity-py.json
 	rust/target/release/any2md-rs html tests/fixtures/sample.html -o /tmp/any2md-parity-rust \

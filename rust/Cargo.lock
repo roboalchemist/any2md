@@ -142,6 +142,7 @@ dependencies = [
 name = "any2md-models"
 version = "0.1.0"
 dependencies = [
+ "any2md-audio",
  "any2md-hub",
  "any2md-mlx",
  "anyhow",

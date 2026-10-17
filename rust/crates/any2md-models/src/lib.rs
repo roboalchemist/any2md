@@ -4,5 +4,7 @@
 //! Whisper LID follow as the port progresses.
 
 pub mod qwen2;
+pub mod whisper;
 
 pub use qwen2::{Generator, KvCache, Qwen2, Qwen2Config};
+pub use whisper::{Whisper, WhisperConfig};

@@ -143,6 +143,32 @@ def cmd_mel(args) -> int:
     return 0
 
 
+def cmd_lid(args) -> int:
+    """Compare native Whisper LID against any2md's Python `_detect_language`."""
+    import subprocess
+
+    from any2md.yt import _detect_language
+
+    failures = 0
+    for wav in args.inputs:
+        py_lang, py_conf = _detect_language(wav)
+        out = subprocess.run(
+            [args.binary, "lid", wav], check=True, capture_output=True, text=True
+        ).stdout.split()
+        rs_lang, rs_conf = out[0], float(out[1])
+        ok = py_lang == rs_lang and abs(py_conf - rs_conf) <= args.max_prob_diff
+        print(
+            f"{'OK  ' if ok else 'FAIL'} {wav}: python={py_lang}/{py_conf:.4f} "
+            f"rust={rs_lang}/{rs_conf:.4f} d={abs(py_conf - rs_conf):.4f}"
+        )
+        failures += 0 if ok else 1
+    if failures:
+        print(f"LID PARITY FAILED ({failures}/{len(args.inputs)})")
+        return 1
+    print("LID PARITY OK")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -167,6 +193,21 @@ def main() -> int:
     mel.add_argument("--binary", default="rust/target/release/any2md-rs")
     mel.add_argument("--max-diff", type=float, default=1e-3)
     mel.set_defaults(func=cmd_mel)
+
+    lid = sub.add_parser("lid", help="compare native Whisper language ID with Python")
+    lid.add_argument("--binary", default="rust/target/release/any2md-rs")
+    lid.add_argument("--max-prob-diff", type=float, default=0.02)
+    lid.add_argument(
+        "inputs",
+        nargs="*",
+        default=[
+            "tests/audio/zh_short.wav",
+            "tests/audio/zh_two_speakers.wav",
+            "tests/audio/yt_interview.wav",
+            "tests/audio/two_speakers.wav",
+        ],
+    )
+    lid.set_defaults(func=cmd_lid)
 
     args = parser.parse_args()
     return args.func(args)
