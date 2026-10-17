@@ -1,5 +1,36 @@
 # WORKLOG
 
+## 2026-10-17 — ANY2-37: native Rust port (Option C), phases 1-5
+
+Goal: a truly native `any2md-rs` on MLX via mlx-c/mlx-rs, with WER/DER parity gates.
+
+Landed so far (branch `ANY2-37`, crate workspace under `rust/`):
+
+| Phase | What | Evidence |
+|---|---|---|
+| 1 | mlx-rs 0.32 + safetensors; mlx-sys builds MLX from source | 4-bit quantized matmul on real ReaderLM weights **identical** to Python MLX |
+| 2 | HF-cache loader, safetensors weights, tokenizers, WAV + mel | whisper mel 7e-6, NeMo mel 5e-5 max diff |
+| 3 | Qwen2/ReaderLM decode loop (GQA, RoPE, KV cache, tied head) | `sample.html` markdown **byte-identical**, 145 tok/s, 1.24 GB |
+| 4 | Whisper encoder + one-step decoder (LID) | 4/4 fixtures same language, prob Δ ≤ 8e-3 |
+| 5 | Parakeet TDT (Conformer + LSTM + joint + chunk merge) | encoder 1e-6 rel; decode trace identical; **token-identical** on 3 fixtures (WER 0.00%); 82-min podcast 26 425 vs 26 388 tokens (0.9965) in 34 s at 3.9 GB |
+
+Traps found while porting (worth remembering):
+- Parakeet's LSTM state update must be **discarded** when the joint predicts blank;
+  committing it drops repeated tokens (`Direct T Tia` → `Directia`).
+- NeMo mel uses a **symmetric** Hann (denominator `size-1`), Whisper a periodic one.
+- `mlx_audio.utils.load_audio` defaults to **24 kHz**; the STT paths use
+  `mlx_audio.stt.utils.load_audio`. A wrong loader made a correct mel look broken.
+- any2md's `generate()` casts the waveform to **bf16** before the STFT; that flips
+  borderline joint decisions (one 30 s crop: 178 tokens at f32 vs 195 at bf16).
+  `any2md-rs stt` therefore defaults to `--dtype bf16` to match the CLI.
+- mlx-rs `try_index(range)` indexes **axis 0**; per-axis slicing needs
+  `take_axis` with explicit index arrays (a silent empty mask otherwise).
+
+Remaining: Qwen3-ASR (audio tower + Qwen3 decoder), Sortformer + Nemotron-3
+diarization with a DER gate, packaging/release docs, merge to `main`.
+
+Gates: `make rust-parity` → mel, LID, STT (WER) and ReaderLM parity.
+
 ## 2026-10-16 — ANY2-36: dep upgrades, memory fixes, model upgrades (v0.4.0)
 
 Goal: update all libraries to latest, hunt the intermittent memory leaks, and apply clear 1:1 model upgrades.
