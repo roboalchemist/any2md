@@ -13,19 +13,36 @@ authors = [
     { name = "Joseph Schlesinger", email = "joe@schlesinger.io" },
 ]
 dependencies = [
-    "typer>=0.9.0",
-    "typing-extensions",
+    "typer>=0.27.3",
+    "typing-extensions>=4.16.0",
 ]
 
 [project.optional-dependencies]
-stt = ["mlx-audio[stt]>=0.4.0", "yt-dlp>=2023.11.14"]
-pdf = ["pymupdf4llm>=0.2.0"]
-img = ["mlx-vlm"]
-web = ["mlx-lm", "httpx"]
-doc = ["markitdown>=0.1.0", "mammoth>=1.12.0"]
-rst = []
-speaker = ["wespeakerruntime", "sqlite-vec"]
-all = ["any2md[stt,pdf,img,web,doc,speaker]"]
+stt = ["mlx>=0.32.4", "mlx-audio[stt]>=0.5.9", "yt-dlp>=2026.8.19"]
+pdf = ["pymupdf4llm>=1.28.2"]
+img = ["mlx>=0.32.4", "mlx-vlm>=0.7.8"]
+web = ["mlx>=0.32.4", "mlx-lm>=0.32.2", "httpx>=0.28.1", "trafilatura>=2.3.1"]
+doc = ["markitdown[pptx,xlsx]>=0.1.8", "mammoth>=1.13.0", "lxml>=6.1.3", "python-docx>=1.2.0"]
+rst = ["pypandoc>=1.17", "docutils>=0.23"]
+sub = ["pysubs2>=1.8.0"]
+speaker = [
+    "wespeakerruntime>=1.0.1",
+    "sqlite-vec>=0.1.9",
+    # wespeakerruntime decodes wav via torchaudio.load, which since torchaudio 2.9
+    # requires torchcodec; pin the pair so the speaker extra actually works.
+    "torch>=2.11.0",
+    "torchaudio>=2.11.0",
+    "torchcodec>=0.17.0",
+]
+all = ["any2md[stt,pdf,img,web,doc,rst,sub,speaker]"]
+
+[dependency-groups]
+dev = ["pytest>=9.1.1", "ruff>=0.17.1"]
+
+[tool.uv]
+# MLX only runs on Apple Silicon; locking for that platform alone also lets uv
+# pick the newest onnxruntime (magika pins onnxruntime<=1.20.1 on Windows only).
+environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
 
 [project.scripts]
 any2md = "any2md.cli:app"

@@ -38,10 +38,12 @@ logger = logging.getLogger(__name__)
 
 from any2md.common import build_frontmatter, is_json_mode, write_json_error, write_json_output
 
-# fitz (PyMuPDF) — loaded at module level so tests can patch pdf2md.fitz.
+# PyMuPDF — loaded at module level (as `fitz`) so tests can patch pdf.fitz.
+# Import it as `pymupdf`: since PyMuPDF 1.28 `import fitz` prints a deprecation
+# notice to stdout, which corrupts --json output.
 # Falls back gracefully if not installed; ImportError is raised at call time.
 try:
-    import fitz
+    import pymupdf as fitz
     _FITZ_AVAILABLE = True
 except ImportError:
     fitz = None  # type: ignore[assignment]

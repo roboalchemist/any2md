@@ -14,6 +14,7 @@ Usage:
     any2md pdf document.pdf --pages 1-10
 """
 
+import importlib
 import importlib.resources
 import logging
 import os
@@ -90,44 +91,55 @@ def _detect_tool(input_path: str) -> str:
     return ""
 
 
-def _get_tool_apps() -> dict:
-    """Lazy-load tool apps to avoid import errors for uninstalled optional deps."""
-    apps = {}
+# Subcommand -> (module, Typer app attribute)
+_TOOL_MODULES = {
+    "yt": ("any2md.yt", "app"),
+    "audio": ("any2md.yt", "app"),
+    "video": ("any2md.yt", "app"),
+    "pdf": ("any2md.pdf", "app"),
+    "img": ("any2md.img", "app"),
+    "web": ("any2md.web", "app"),
+    "html": ("any2md.html", "app"),
+    "doc": ("any2md.doc", "app"),
+    "rst": ("any2md.rst", "app"),
+    "csv": ("any2md.csv", "app"),
+    "data": ("any2md.data", "app"),
+    "db": ("any2md.db", "app"),
+    "sub": ("any2md.sub", "app"),
+    "nb": ("any2md.nb", "app"),
+    "eml": ("any2md.eml", "app"),
+    "org": ("any2md.org", "app"),
+    "tex": ("any2md.tex", "app"),
+    "man": ("any2md.man", "app"),
+    "repo": ("any2md.repo", "app"),
+    "speaker": ("any2md.speaker", "speaker_app"),
+}
 
-    def _try_import(name, module_path):
-        try:
-            mod = __import__(module_path, fromlist=["app"])
-            apps[name] = mod.app
-        except ImportError:
-            pass
 
-    _try_import("yt", "any2md.yt")
-    _try_import("audio", "any2md.yt")
-    _try_import("video", "any2md.yt")
-    _try_import("pdf", "any2md.pdf")
-    _try_import("img", "any2md.img")
-    _try_import("web", "any2md.web")
-    _try_import("html", "any2md.html")
-    _try_import("doc", "any2md.doc")
-    _try_import("rst", "any2md.rst")
-    _try_import("csv", "any2md.csv")
-    _try_import("data", "any2md.data")
-    _try_import("db", "any2md.db")
-    _try_import("sub", "any2md.sub")
-    _try_import("nb", "any2md.nb")
-    _try_import("eml", "any2md.eml")
-    _try_import("org", "any2md.org")
-    _try_import("tex", "any2md.tex")
-    _try_import("man", "any2md.man")
-    _try_import("repo", "any2md.repo")
+def _load_tool_app(name: str):
+    """Import only the converter module behind *name*; None if it can't be imported.
 
-    # Speaker catalog management — uses speaker_app (not app) from speaker module
+    Importing a single module matters: img/pdf pull in mlx-vlm (and with it
+    transformers and torch) at import time, which costs seconds and hundreds of
+    MB for a run that only converts a CSV.
+    """
+    if name not in _TOOL_MODULES:
+        return None
+    module_path, attr = _TOOL_MODULES[name]
     try:
-        from any2md import speaker as speaker_mod
-        apps["speaker"] = speaker_mod.speaker_app
+        mod = importlib.import_module(module_path)
     except ImportError:
-        pass
+        return None
+    return getattr(mod, attr, None)
 
+
+def _get_tool_apps() -> dict:
+    """Import every converter app (used for the --help availability listing)."""
+    apps = {}
+    for name in _TOOL_MODULES:
+        tool_app = _load_tool_app(name)
+        if tool_app is not None:
+            apps[name] = tool_app
     return apps
 
 
@@ -381,6 +393,9 @@ def _show_docs() -> None:
 
 def app():
     """Main entry point — dispatches to subcommand or auto-detects."""
+    from any2md.common import configure_mlx_memory
+
+    configure_mlx_memory()
     args = sys.argv[1:]
 
     if args == ["--help"] or args == ["-h"] or not args:
@@ -391,15 +406,15 @@ def app():
 
     # Standard subcommand help: any2md <cmd> --help
     if len(args) >= 2 and args[1] in ("--help", "-h") and args[0] in _SUBCOMMANDS:
-        tool_apps = _get_tool_apps()
         if args[0] == "deps":
             _show_deps()
             return
         if args[0] == "docs":
             _show_docs()
             return  # pragma: no cover
-        if args[0] in tool_apps:
-            tool_apps[args[0]](["--help"], standalone_mode=True)
+        tool_app = _load_tool_app(args[0])
+        if tool_app is not None:
+            tool_app(["--help"], standalone_mode=True)
             return
 
     if args == ["--version"] or args == ["-V"]:
@@ -453,30 +468,30 @@ def app():
         sys.stdout.write(script)
         return
 
-    tool_apps = _get_tool_apps()
-
     # Explicit subcommand
     if first in _SUBCOMMANDS:
-        if first not in tool_apps:
+        tool_app = _load_tool_app(first)
+        if tool_app is None:
             typer.echo(f"Subcommand '{first}' not available. Install its dependencies first.", err=True)
             raise SystemExit(1)
         # Pass args after the subcommand name (skip 'yt', 'csv', etc.)
-        tool_apps[first](args[1:], standalone_mode=True)
+        tool_app(args[1:], standalone_mode=True)
         return
 
     # Auto-detect from first arg
     tool = _detect_tool(first)
     if tool:
-        if tool not in tool_apps:
+        tool_app = _load_tool_app(tool)
+        if tool_app is None:
             typer.echo(f"Detected '{tool}' converter but it's not installed. Install its dependencies.", err=True)
             raise SystemExit(1)
         # Pass all args — auto-detect, so first arg is the input file
-        tool_apps[tool](args, standalone_mode=True)
+        tool_app(args, standalone_mode=True)
         return
 
     typer.echo(
         f"Cannot auto-detect type for: {first}\n"
-        f"Available subcommands: {', '.join(sorted(tool_apps.keys()))}\n"
+        f"Available subcommands: {', '.join(sorted(_TOOL_MODULES))}\n"
         "Run 'any2md --help' for usage.",
         err=True,
     )

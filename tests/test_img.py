@@ -42,7 +42,13 @@ class TestResolveModel(unittest.TestCase):
 
     def test_alias_smoldocling(self):
         result = resolve_model("smoldocling")
-        self.assertEqual(result, "mlx-community/SmolDocling-256M-4bit")
+        # The old mlx-community/SmolDocling-256M-4bit repo was removed from the
+        # Hub; the real MLX conversion lives under docling-project.
+        self.assertEqual(result, "docling-project/SmolDocling-256M-preview-mlx-bf16")
+
+    def test_new_generation_aliases(self):
+        self.assertEqual(resolve_model("qwen3.8-27b"), "mlx-community/Qwen3.8-27B-4bit")
+        self.assertEqual(resolve_model("qwen3.6-35b"), "mlx-community/Qwen3.6-35B-A3B-4bit")
 
     def test_passthrough_full_hf_id(self):
         full_id = "mlx-community/Qwen3.5-27B-4bit"

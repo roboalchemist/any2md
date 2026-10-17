@@ -33,13 +33,19 @@ import subprocess
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple, List
 import logging
 
 import typer
 from typing_extensions import Annotated
 
-from any2md.common import build_frontmatter, is_json_mode, write_json_output  # noqa: F401 — build_frontmatter re-exported for backward compat
+from any2md.common import (  # noqa: F401 — build_frontmatter re-exported for backward compat
+    build_frontmatter,
+    configure_mlx_memory,
+    is_json_mode,
+    release_mlx_memory,
+    write_json_output,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -97,7 +103,29 @@ ALIGNER_LANGS = {
     "pt", "portuguese",
 }
 
-_aligner_model_cache = None  # module-level singleton (keyed implicitly — one aligner at a time)
+# Qwen3-ASR and Qwen3-ForcedAligner expect language *names* ("Chinese"), while
+# LID, YouTube metadata and --language usually give ISO codes ("zh", "en-US").
+# Unknown strings are passed through verbatim (the aligner would then tokenize
+# Chinese as a space-separated language), so normalize codes first.
+QWEN3_LANGUAGE_NAMES = {
+    "zh": "Chinese", "en": "English", "yue": "Cantonese", "ar": "Arabic", "de": "German",
+    "fr": "French", "es": "Spanish", "pt": "Portuguese", "id": "Indonesian", "it": "Italian",
+    "ko": "Korean", "ru": "Russian", "th": "Thai", "vi": "Vietnamese", "ja": "Japanese",
+    "tr": "Turkish", "hi": "Hindi", "ms": "Malay", "nl": "Dutch", "sv": "Swedish",
+    "da": "Danish", "fi": "Finnish", "pl": "Polish", "cs": "Czech", "fil": "Filipino",
+    "tl": "Filipino", "fa": "Persian", "el": "Greek", "ro": "Romanian", "hu": "Hungarian",
+    "mk": "Macedonian",
+}
+
+
+def _qwen3_language_name(language: str) -> str:
+    """Map an ISO code like 'zh' or 'en-US' to the name Qwen3 models expect."""
+    code = language.strip().lower()
+    return QWEN3_LANGUAGE_NAMES.get(code) or QWEN3_LANGUAGE_NAMES.get(code.split("-")[0], language)
+
+
+# (model_name, model) of the loaded aligner; released by unload_forced_aligner()
+_aligner_model_cache: Optional[Tuple[str, Any]] = None
 
 
 def load_forced_aligner(model_name: str = DEFAULT_ALIGNER_MODEL):
@@ -108,11 +136,13 @@ def load_forced_aligner(model_name: str = DEFAULT_ALIGNER_MODEL):
     ValueError/KeyError we fall back to snapshot_download + retry.
 
     Returns the loaded model, or None on any failure (callers must fall back
-    gracefully to coarse segments in that case).
+    gracefully to coarse segments in that case). Call unload_forced_aligner()
+    when done so the weights don't stay resident for the rest of the process.
     """
     global _aligner_model_cache
-    if _aligner_model_cache is not None:
-        return _aligner_model_cache
+    if _aligner_model_cache is not None and _aligner_model_cache[0] == model_name:
+        return _aligner_model_cache[1]
+    unload_forced_aligner()
 
     try:
         from mlx_audio.stt import load_model
@@ -122,8 +152,8 @@ def load_forced_aligner(model_name: str = DEFAULT_ALIGNER_MODEL):
 
     try:
         m = load_model(model_name)
-        _aligner_model_cache = m
-        return _aligner_model_cache
+        _aligner_model_cache = (model_name, m)
+        return m
     except (ValueError, KeyError) as e:
         logger.warning(
             "Aligner load_model('%s') failed (%s); attempting snapshot_download fallback",
@@ -139,8 +169,8 @@ def load_forced_aligner(model_name: str = DEFAULT_ALIGNER_MODEL):
         local_path = snapshot_download(repo_id=model_name)
         try:
             m = load_model(local_path)
-            _aligner_model_cache = m
-            return _aligner_model_cache
+            _aligner_model_cache = (model_name, m)
+            return m
         except Exception as e2:
             logger.error(
                 "Aligner instantiation failed even with local path '%s': %s — skipping",
@@ -152,6 +182,69 @@ def load_forced_aligner(model_name: str = DEFAULT_ALIGNER_MODEL):
         return None
 
 
+def unload_forced_aligner() -> None:
+    """Drop the cached aligner model and return its memory."""
+    global _aligner_model_cache
+    if _aligner_model_cache is not None:
+        _aligner_model_cache = None
+        release_mlx_memory()
+
+
+def _load_wav_16k(audio_path: str):
+    """Read audio as a mono float32 numpy array at 16 kHz."""
+    import numpy as np
+    try:
+        from mlx_audio.audio_io import read as audio_read
+        samples, _sr = audio_read(audio_path, dtype="float32", sample_rate=AUDIO_SAMPLE_RATE, nchannels=1)
+        return np.asarray(samples, dtype=np.float32).reshape(-1)
+    except ImportError:
+        from mlx_audio.stt.utils import load_audio
+        return np.array(load_audio(audio_path, sr=AUDIO_SAMPLE_RATE), dtype=np.float32).reshape(-1)
+
+
+def _align_words_per_segment(aligner, audio_path: str, segments, language: str) -> list:
+    """Word-align an ASR transcript one segment at a time.
+
+    Qwen3-ForcedAligner aligns its whole input in a single forward pass and is
+    trained on clips of up to ~5 minutes. Handing it a full recording plus its
+    full transcript needs memory that grows with the recording length (and
+    degrades alignment past 5 minutes). ASR segments are at most
+    --chunk-duration long (30 s by default), so aligning them one by one keeps
+    memory flat. Word timestamps are shifted back onto the recording timeline.
+    """
+    wav = _load_wav_16k(audio_path)
+    words = []
+    for seg in segments:
+        start, end, text = _extract_sentence_fields(seg)
+        if start is None or not (text or "").strip():
+            continue
+        clip = wav[int(start * AUDIO_SAMPLE_RATE):int(end * AUDIO_SAMPLE_RATE)]
+        if clip.size == 0:
+            continue
+        result = aligner.generate(clip, text=text.strip(), language=language)
+        for item in getattr(result, "items", result):
+            item_start, item_end, item_text = _word_fields(item)
+            if item_start is None or item_end is None:
+                continue
+            words.append({"start": start + item_start, "end": start + item_end, "text": item_text})
+    return words
+
+
+def _word_fields(w) -> tuple:
+    """(start, end, text) of an aligner word: ForcedAlignItem, object, or dict."""
+    if hasattr(w, "start_time"):  # mlx-audio ForcedAlignItem
+        return w.start_time, w.end_time, w.text
+    if hasattr(w, "start"):
+        return w.start, w.end, w.text
+    if isinstance(w, dict):
+        return (
+            w.get("start", w.get("start_time")),
+            w.get("end", w.get("end_time")),
+            w.get("text", ""),
+        )
+    return None, None, ""
+
+
 def _phrasify_word_alignment(words, max_phrase_s: float = 15.0, gap_threshold_s: float = 0.4):
     """Group word-level aligner output into ~5–15s phrases.
 
@@ -161,8 +254,9 @@ def _phrasify_word_alignment(words, max_phrase_s: float = 15.0, gap_threshold_s:
       - Phrase duration exceeding max_phrase_s
 
     Args:
-        words: List of word dicts (keys: "start", "end", "text") or objects with
-               .start / .end / .text attributes, as returned by the ForcedAligner.
+        words: List of word dicts (keys: "start", "end", "text"), mlx-audio
+               ForcedAlignItem objects (.start_time / .end_time / .text), or
+               objects with .start / .end / .text attributes.
         max_phrase_s: Maximum phrase duration in seconds (default: 15.0).
         gap_threshold_s: Minimum silence gap that triggers a phrase break (default: 0.4s).
 
@@ -191,12 +285,7 @@ def _phrasify_word_alignment(words, max_phrase_s: float = 15.0, gap_threshold_s:
 
     prev_end = None
     for w in words:
-        if hasattr(w, "start"):
-            ws, we, wt = w.start, w.end, w.text
-        else:
-            ws = w.get("start")
-            we = w.get("end")
-            wt = w.get("text", "")
+        ws, we, wt = _word_fields(w)
 
         if ws is None or we is None:
             continue
@@ -237,7 +326,10 @@ LID_SAMPLE_WINDOW_S = 30.0            # Whisper's native window (universal in pr
 LID_CONFIDENCE_THRESHOLD = 0.5        # from faster-whisper's production default
 LID_MAJORITY_VOTE_SEGMENTS = 3        # max segments for majority-vote (future use)
 PARAKEET_LANGS = {"en", "english", "eng"}  # ISO 639-1, full name, ISO 639-2
-DEFAULT_LID_MODEL = "mlx-community/whisper-tiny-mlx"
+# whisper-tiny-asr-* repackages the same whisper-tiny weights as the old
+# whisper-tiny-mlx port but ships preprocessor_config.json/tokenizer.json, so
+# no openai/whisper-tiny processor fallback is needed.
+DEFAULT_LID_MODEL = "mlx-community/whisper-tiny-asr-fp16"
 
 _lid_model_cache = None  # module-level singleton
 
@@ -250,6 +342,30 @@ def _audio_duration_s(wav_path: str) -> float:
             return w.getnframes() / w.getframerate()
     except Exception:
         return 0.0
+
+
+def _extract_lid_window(wav_path: str, seconds: float) -> str:
+    """Write the first *seconds* of a 16 kHz mono WAV to a temp file and return its path.
+
+    LID only needs Whisper's 30 s window; slicing here keeps mel computation
+    O(1) in recording length instead of running over an hours-long file.
+    Falls back to the original path if the WAV can't be read with stdlib wave.
+    """
+    import shutil
+    import tempfile
+    import wave as _wave
+    try:
+        with _wave.open(wav_path, "rb") as src:
+            frames = min(src.getnframes(), int(seconds * src.getframerate()))
+            params = src.getparams()
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp_path = tmp.name
+            with _wave.open(tmp_path, "wb") as dst:
+                dst.setparams(params)
+                dst.writeframes(src.readframes(frames))
+        return tmp_path
+    except Exception:
+        return wav_path
 
 
 def _load_lid_model(model_name: str = DEFAULT_LID_MODEL):
@@ -322,7 +438,7 @@ def _detect_language(wav_path: str) -> tuple:
                 logger.warning("Cannot import Whisper audio utils — LID disabled")
                 return "en", 0.0
 
-        mel, _content_frames = model._prepare_audio(wav_path)
+        mel, _content_frames = model._prepare_audio(_extract_lid_window(wav_path, LID_SAMPLE_WINDOW_S + 1.0))
         # Trim/pad to a single 30s window (Whisper's native LID window)
         mel_segment = pad_or_trim(mel, N_FRAMES, axis=-2).astype(model.dtype)
 
@@ -727,25 +843,45 @@ def segments_to_markdown(sentences: List, title: Optional[str] = None,
     return "\n".join(lines)
 
 
-DEFAULT_DIARIZE_MODEL = "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16"
-DEFAULT_DIARIZE_CHUNK_DURATION = 10.0  # seconds per chunk; only used for non-streaming models
+DEFAULT_DIARIZE_MODEL = "mlx-community/Nemotron-3-Diarization"
+DEFAULT_DIARIZE_CHUNK_DURATION = 10.0  # seconds per chunk; only used for Sortformer models
+
+# Legacy diarization models (kept working; the pre-0.3.5 default was diar_sortformer_4spk-v1-fp32)
+LEGACY_DIARIZE_MODELS = (
+    "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16",
+    "mlx-community/diar_sortformer_4spk-v1-fp32",
+    "mlx-community/diar_sortformer_4spk-v1-fp16",
+)
 
 
-def _is_streaming_diar_model(model_name: str) -> bool:
-    """Return True for streaming-trained Sortformer models.
+def _is_nemotron_diar_model(model_name: str) -> bool:
+    """Return True for Nemotron-3-Diarization models.
 
-    Streaming models carry their own Arrival-Order Speaker Cache (AOSC)
-    internally, so they can run over a full clip with bounded memory and
-    keep stable speaker IDs across the whole recording. Wrapping them in
-    application-level `generate_stream(chunk_duration=...)` resets the
-    AOSC every chunk, which causes the same human to be re-numbered across
-    chunks and shows up as 4-way over-segmentation on a 2-person clip.
+    Nemotron's ``generate()`` processes the clip through bounded internal
+    windows (NVIDIA's offline streaming preset) with an Arrival-Order Speaker
+    Cache, so the full-clip call is safe for recordings of any length and
+    keeps stable speaker IDs.
     """
-    return "streaming_sortformer" in (model_name or "").lower()
+    name = (model_name or "").lower()
+    return "nemotron" in name and "diar" in name
+
+
+def _is_sortformer_diar_model(model_name: str) -> bool:
+    """Return True for Sortformer diarization models.
+
+    Sortformer's full-clip ``generate()`` runs O(n²) self-attention over the
+    whole recording — an 82-minute clip stalls growing past 20 GB. Those
+    models must be driven through ``generate_stream(chunk_duration=...)``,
+    which processes fixed-size windows while the model's internal
+    Arrival-Order Speaker Cache keeps memory bounded AND speaker IDs stable
+    across chunks (mlx-audio >= 0.5.6 threads the streaming state correctly).
+    """
+    name = (model_name or "").lower()
+    return "sortformer" in name
 
 
 def load_diarization_model(model_name: str = DEFAULT_DIARIZE_MODEL):
-    """Load Sortformer diarization model via mlx_audio.vad.load()."""
+    """Load a diarization model (Nemotron-3-Diarization or Sortformer) via mlx_audio.vad.load()."""
     try:
         from mlx_audio.vad import load
     except ImportError:
@@ -760,27 +896,33 @@ def load_diarization_model(model_name: str = DEFAULT_DIARIZE_MODEL):
 
 
 def diarize(audio_path: str, model, chunk_duration: float = DEFAULT_DIARIZE_CHUNK_DURATION):
-    """Run speaker diarization on audio file.
+    """Run speaker diarization on audio file with memory bounded by design.
 
-    Streaming-trained Sortformer models (`diar_streaming_sortformer_*`) are
-    called via `generate()` over the full clip — their internal AOSC cache
-    keeps memory bounded *and* preserves speaker identity across the whole
-    recording. Offline-trained models (`diar_sortformer_*`) get the old
-    `generate_stream(chunk_duration=...)` path so long audio with the fp32
-    model still avoids OOM.
+    Dispatch on model family:
+
+    - Nemotron-3-Diarization: ``generate()`` processes the clip through
+      bounded internal windows with an Arrival-Order Speaker Cache — safe for
+      recordings of any length, stable speaker IDs, up to 8 speakers.
+    - Sortformer (streaming v2.1 or offline v1): the full-clip ``generate()``
+      runs O(n²) self-attention and OOMs/stalls on long audio, so drive
+      ``generate_stream(chunk_duration=...)`` instead and merge the per-chunk
+      segments. mlx-audio (>= 0.5.6) threads the streaming state across
+      chunks, so speaker IDs stay stable.
 
     Args:
         audio_path: Path to the audio file.
-        model: Loaded Sortformer diarization model from `load_diarization_model`.
-        chunk_duration: Chunk size for the offline-model fallback path.
+        model: Loaded diarization model from `load_diarization_model`.
+        chunk_duration: Chunk size for the Sortformer streaming path.
 
     Returns:
         DiarizationOutput with merged speaker segments.
     """
-    model_name = getattr(model, "_any2md_model_name", "") or ""
+    model_name = getattr(model, "_any2md_model_name", "")
+    if not isinstance(model_name, str):
+        model_name = ""
 
-    if _is_streaming_diar_model(model_name):
-        logger.info("Running diarization on: %s (streaming model, full-clip)", audio_path)
+    if _is_nemotron_diar_model(model_name):
+        logger.info("Running diarization on: %s (Nemotron-3, bounded streaming windows)", audio_path)
         start = time.time()
         result = model.generate(audio_path)
         elapsed = time.time() - start
@@ -791,7 +933,7 @@ def diarize(audio_path: str, model, chunk_duration: float = DEFAULT_DIARIZE_CHUN
         )
         return result
 
-    logger.info("Running diarization on: %s (chunk_duration=%.1fs)", audio_path, chunk_duration)
+    logger.info("Running diarization on: %s (Sortformer streaming, chunk_duration=%.1fs)", audio_path, chunk_duration)
     start = time.time()
 
     all_segments = []
@@ -1120,6 +1262,8 @@ def transcribe(
     logger.info(f"Transcribing audio using model: {model_name}")
     start_time = time.time()
 
+    configure_mlx_memory()
+
     # Load model
     model = load(model_name)
 
@@ -1132,11 +1276,18 @@ def transcribe(
     end_time = time.time()
     logger.info(f"Transcription completed in {end_time - start_time:.2f} seconds")
 
+    # The STT model is no longer needed — drop it so its weights don't sit in
+    # memory while diarization/aligner/speaker models load.
+    del model
+    release_mlx_memory()
+
     # Optional diarization
     diarized_segments = None
     if diarize_model_name:
         diar_model = load_diarization_model(diarize_model_name)
         diar_output = diarize(audio_file, diar_model)
+        del diar_model
+        release_mlx_memory()
 
         # For Qwen3-ASR + supported language, use ForcedAligner for word-level timestamps
         # so that speaker boundaries within a sentence are resolved correctly.
@@ -1147,8 +1298,13 @@ def transcribe(
             aligner = load_forced_aligner(aligner_model)
             if aligner is not None:
                 try:
-                    word_alignment = aligner.generate(audio_file, text=result.text, language=language)
-                    words = getattr(word_alignment, "words", word_alignment)
+                    # Align one ASR segment at a time: the aligner runs a single
+                    # forward pass whose memory grows with clip length, and it is
+                    # only reliable up to ~5 minutes of audio.
+                    words = _align_words_per_segment(
+                        aligner, audio_file, _get_segments(result),
+                        _qwen3_language_name(language),
+                    )
                     aligned_segments = _phrasify_word_alignment(words)
                     logger.info(
                         "Forced-aligner produced %d phrases (was %d coarse segments)",
@@ -1159,6 +1315,8 @@ def transcribe(
                         "Forced-aligner failed (%s); falling back to coarse segments", e
                     )
                     aligned_segments = None
+                finally:
+                    unload_forced_aligner()
         elif diarize_model_name and is_qwen3:
             logger.warning(
                 "Qwen3-ForcedAligner does not support %r; using coarse segment-level "
@@ -1182,7 +1340,7 @@ def transcribe(
                     close_catalog,
                 )
                 speaker_wav = audio_for_speaker or audio_file
-                logger.info("Extracting speaker embeddings via WeSpeaker ResNet293...")
+                logger.info("Extracting speaker embeddings via WeSpeaker (ONNX)...")
                 spk_model = load_speaker_model(device="mps")
                 diarized_segments = extract_embeddings_for_segments(
                     spk_model, speaker_wav, diarized_segments
@@ -1330,6 +1488,7 @@ def transcribe(
         f.write(content)
 
     logger.info(f"Output saved to: {output_file}")
+    release_mlx_memory()
     return output_file
 
 
