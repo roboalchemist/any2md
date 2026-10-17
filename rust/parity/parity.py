@@ -99,6 +99,50 @@ def cmd_compare(args) -> int:
     return 0
 
 
+def cmd_mel(args) -> int:
+    """Compare the native mel front-end against the Python one for a WAV."""
+    import subprocess
+    import tempfile
+
+    import numpy as np
+
+    def load_bin(path):
+        raw = open(path, "rb").read()
+        nd = int.from_bytes(raw[:4], "little")
+        dims = [int.from_bytes(raw[4 + 4 * i : 8 + 4 * i], "little") for i in range(nd)]
+        return np.frombuffer(raw[4 + 4 * nd :], dtype="<f4").reshape(dims)
+
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
+        out = tmp.name
+    subprocess.run(
+        [args.binary, "mel", args.input, "--kind", args.kind, "--out", out],
+        check=True,
+        capture_output=True,
+    )
+    rust = load_bin(out)
+
+    from mlx_audio.stt.utils import load_audio
+
+    wav = load_audio(args.input)
+    if args.kind == "whisper":
+        from mlx_audio.stt.models.whisper.audio import log_mel_spectrogram
+
+        ref = np.array(log_mel_spectrogram(wav, n_mels=80, padding=0))
+    else:
+        from mlx_audio.vad.models.sortformer.sortformer import extract_mel_features
+
+        ref = np.array(extract_mel_features(wav, n_mels=128, normalize="per_feature", pad_to=16))[0]
+
+    frames = min(ref.shape[-1], rust.shape[-1])
+    diff = float(np.abs(ref[:, :frames] - rust[:, :frames]).max())
+    print(f"{args.kind} mel: python{ref.shape} rust{rust.shape} max|diff|={diff:.3e}")
+    if diff > args.max_diff:
+        print(f"MEL PARITY FAILED: {diff:.3e} > {args.max_diff:.1e}")
+        return 1
+    print("MEL PARITY OK")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -116,6 +160,13 @@ def main() -> int:
     cmp_.add_argument("rust")
     cmp_.add_argument("--min-similarity", type=float, default=0.99)
     cmp_.set_defaults(func=cmd_compare)
+
+    mel = sub.add_parser("mel", help="compare the native mel front-end with Python")
+    mel.add_argument("--input", required=True)
+    mel.add_argument("--kind", choices=["whisper", "nemo"], default="whisper")
+    mel.add_argument("--binary", default="rust/target/release/any2md-rs")
+    mel.add_argument("--max-diff", type=float, default=1e-3)
+    mel.set_defaults(func=cmd_mel)
 
     args = parser.parse_args()
     return args.func(args)

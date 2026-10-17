@@ -1,0 +1,13 @@
+[package]
+name = "any2md-audio"
+description = "WAV I/O and MLX STFT/log-mel front-ends matching mlx-audio's preprocessing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any2md-mlx = { workspace = true }
+mlx-rs = { workspace = true }
+anyhow = { workspace = true }
+hound = { workspace = true }
+tracing = { workspace = true }

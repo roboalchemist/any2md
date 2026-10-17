@@ -38,6 +38,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Dump log-mel features for a 16 kHz mono WAV (parity/verification helper)
+    Mel {
+        /// 16 kHz mono WAV file
+        input: PathBuf,
+        /// Front-end: whisper (Whisper LID) or nemo (Parakeet/Sortformer/Nemotron)
+        #[arg(long, default_value = "whisper")]
+        kind: String,
+        /// Where to write the raw f32 little-endian tensor
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Convert a local HTML file to markdown with ReaderLM-v2
     Html {
         /// HTML file to convert
@@ -74,6 +85,7 @@ fn main() -> Result<()> {
 
     any2md_mlx::init()?;
     match cli.command {
+        Command::Mel { input, kind, out } => dump_mel(&input, &kind, &out),
         Command::Html {
             input,
             output_dir,
@@ -213,4 +225,29 @@ fn floor_char_boundary(s: &str, idx: usize) -> usize {
         i -= 1;
     }
     i
+}
+
+/// Write `[dims]` + raw f32 data so a Python harness can `np.fromfile` it.
+fn dump_mel(input: &Path, kind: &str, out: &Path) -> Result<()> {
+    use anyhow::Context as _;
+    let audio = any2md_audio::read_wav_16k(input)?;
+    let mel = match kind {
+        "whisper" => any2md_audio::whisper_mel(&audio, 80)?,
+        "nemo" => any2md_audio::nemo_mel(&audio, &any2md_audio::NemoMel::parakeet())?,
+        other => anyhow::bail!("unknown mel kind {other:?} (whisper|nemo)"),
+    };
+    mel.eval()?;
+    let shape = mel.shape().to_vec();
+    let data = mel.as_slice::<f32>();
+    let mut buf = Vec::with_capacity(8 + data.len() * 4);
+    buf.extend_from_slice(&(shape.len() as u32).to_le_bytes());
+    for d in &shape {
+        buf.extend_from_slice(&(*d as u32).to_le_bytes());
+    }
+    for v in data {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(out, &buf).with_context(|| format!("write {}", out.display()))?;
+    eprintln!("mel {:?} -> {}", shape, out.display());
+    Ok(())
 }

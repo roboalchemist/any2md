@@ -13,6 +13,7 @@ repository = "https://github.com/roboalchemist/any2md"
 any2md-mlx = { path = "crates/any2md-mlx" }
 any2md-hub = { path = "crates/any2md-hub" }
 any2md-models = { path = "crates/any2md-models" }
+any2md-audio = { path = "crates/any2md-audio" }
 
 mlx-rs = { version = "0.32", features = ["metal", "safetensors"] }
 safetensors = "0.8"
