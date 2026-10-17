@@ -16,7 +16,8 @@ Goal: update all libraries to latest, hunt the intermittent memory leaks, and ap
   (MLX-only project), which also frees onnxruntime from magika's Windows pin.
 - **Memory fixes** (the "leaks"):
   1. Diarization O(n²): Sortformer full-clip `generate()` ran attention over the
-     whole recording — an 82-min podcast stalled at **21 GB footprint for 5+ min**
+     whole recording — an 82-min podcast stalled at **21 GB footprint for 17+ min**
+     (never finished)
      and never finished. Root cause confirmed in upstream source (mlx-audio 0.5.9
      `sortformer.py::generate` computes full-file mel + one full attention pass).
      Fix: dispatch on model family. Nemotron-3-Diarization `generate()` streams
@@ -67,9 +68,30 @@ Goal: update all libraries to latest, hunt the intermittent memory leaks, and ap
   `wespeakerruntime` was dead-on-arrival with latest torch. Added
   `torch/torchaudio/torchcodec` pins to the `[speaker]` extra; verified
   end-to-end embedding extraction works.
-- Tests: 1105 unit + 16 slow + 11 integration all pass on the new stack
+- Tests: 1107 unit + 16 slow + 11 integration all pass on the new stack
   (fixed pre-existing failures: missing rst/doc/sub deps, fitz stdout pollution,
   `test_zh_two_speakers_diarize` asserting frontmatter without metadata).
+- **Upgrade regressions caught by the memory perf pass** (all fixed + regression
+  tests):
+  - `pymupdf4llm` 1.28 reports `page_number` **1-based**; the old `+1` shifted
+    every page and made VLM OCR on the last page fail ("page 10 not in
+    document" → 9/10 pages converted).
+  - PyMuPDF 1.28 prints parser messages to **stdout**, corrupting `--json`
+    (`pymupdf.set_messages(stream=sys.stderr)`).
+  - `configure_mlx_memory()` originally imported mlx.core at startup, costing
+    ~150 ms on every zero-dep run (csv 0.04s → 0.20s). Now it only acts when
+    MLX is already loaded; each MLX converter configures/releases explicitly.
+
+### Final measured numbers (all on the merged main)
+
+| Workload | Before | After |
+|---|---|---|
+| 82-min podcast `--diarize` (Nemotron default) | 21 GB footprint, still running after 17 min, killed | **4.64 GB peak, 61 s**, 0.68 GB after |
+| 82-min podcast `--diarize-model diar_streaming_sortformer…` | 24.7 GB peak (first pass), 21 GB stall on the old full-clip path | **4.64 GB peak**, 0.62 GB after |
+| 3× repeat of `yt interview.wav --diarize` | 4.56 → 4.62 GB resident, 4.04 GB cache never released | **0.61 / 0.61 / 0.62 GB**, cache 0.00 GB |
+| `any2md x.csv` (zero-dep converter) | 3.1 s / 445 MB (imported mlx-vlm+torch for every command) | **0.04 s / 15 MB** |
+| VLM OCR, 12 pages in one process | untested | 3.69 GB flat, cache 0.09 GB |
+| Speaker embeddings, 45 segments | untested | 0.92 → 0.46 GB (flat) |
 
 ### Gotchas for next time
 
