@@ -1,0 +1,216 @@
+//! Native any2md CLI (Rust + MLX).
+//!
+//! First ported converter: `html` (ReaderLM-v2 → markdown), which exercises the
+//! whole native stack: HF cache resolution, safetensors loading, tokenizer,
+//! chat template, KV-cached decode loop, and output formatting.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use tokenizers::Tokenizer;
+
+use any2md_models::{Generator, Qwen2, Qwen2Config};
+
+const READERLM: &str = "mlx-community/jinaai-ReaderLM-v2";
+const MAX_HTML_CHARS: usize = 200_000;
+const MAX_OUTPUT_TOKENS: usize = 8192;
+/// `<|im_end|>` and `<|endoftext|>` for Qwen2-family tokenizers.
+const EOS_IDS: [u32; 2] = [151645, 151643];
+
+const SYSTEM_PROMPT: &str = "Convert the HTML to clean markdown. \
+Output only the converted markdown. \
+Do not include any explanations or preamble.";
+
+#[derive(Parser)]
+#[command(
+    name = "any2md-rs",
+    version,
+    about = "Convert anything to markdown — native Rust/MLX build"
+)]
+struct Cli {
+    #[arg(long, global = true)]
+    verbose: bool,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Convert a local HTML file to markdown with ReaderLM-v2
+    Html {
+        /// HTML file to convert
+        input: PathBuf,
+        /// Output directory (default: current directory)
+        #[arg(short = 'o', long, default_value = ".")]
+        output_dir: PathBuf,
+        /// Hugging Face model id
+        #[arg(short = 'm', long, default_value = READERLM)]
+        model: String,
+        /// Maximum tokens to generate
+        #[arg(long, default_value_t = MAX_OUTPUT_TOKENS)]
+        max_tokens: usize,
+        /// Print the prompt token count and boundary token ids (parity checks)
+        #[arg(long)]
+        dump_prompt: bool,
+        /// Print generation stats (tokens/s, memory) to stderr
+        #[arg(long)]
+        stats: bool,
+        /// Write a machine-readable parity report (prompt/generated tokens, text)
+        #[arg(long)]
+        stats_json: Option<PathBuf>,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let filter = if cli.verbose { "debug" } else { "info" };
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
+
+    any2md_mlx::init()?;
+    match cli.command {
+        Command::Html {
+            input,
+            output_dir,
+            model,
+            max_tokens,
+            dump_prompt,
+            stats,
+            stats_json,
+        } => html_to_markdown(
+            &input,
+            &output_dir,
+            &model,
+            max_tokens,
+            dump_prompt,
+            stats,
+            stats_json.as_deref(),
+        ),
+    }
+}
+
+/// `qwen2` uses this prompt shape (see the model's `tokenizer_config.json`).
+fn build_prompt(html: &str) -> String {
+    format!(
+        "<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n\
+         <|im_start|>user\n{html}<|im_end|>\n\
+         <|im_start|>assistant\n"
+    )
+}
+
+fn html_to_markdown(
+    input: &Path,
+    output_dir: &Path,
+    model_id: &str,
+    max_tokens: usize,
+    dump_prompt: bool,
+    stats: bool,
+    stats_json: Option<&Path>,
+) -> Result<()> {
+    let html = std::fs::read_to_string(input)
+        .with_context(|| format!("read {}", input.display()))?;
+    let html = if html.len() > MAX_HTML_CHARS {
+        tracing::warn!(len = html.len(), "truncating HTML to {MAX_HTML_CHARS} chars");
+        &html[..floor_char_boundary(&html, MAX_HTML_CHARS)]
+    } else {
+        &html
+    };
+
+    let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
+    let config = Qwen2Config::from_json(&std::fs::read_to_string(&cfg_path)?)?;
+    let tokenizer_path = any2md_hub::get_file(model_id, "tokenizer.json")?;
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+
+    let prompt = build_prompt(html);
+    let encoding = tokenizer
+        .encode(prompt, false)
+        .map_err(|e| anyhow::anyhow!("tokenize prompt: {e}"))?;
+    let ids: Vec<i32> = encoding.get_ids().iter().map(|v| *v as i32).collect();
+    if dump_prompt {
+        eprintln!(
+            "prompt_tokens={} first={:?} last={:?}",
+            ids.len(),
+            &ids[..ids.len().min(6)],
+            &ids[ids.len() - 6..]
+        );
+    }
+
+    let dir = cfg_path.parent().context("config has no parent dir")?;
+    tracing::info!(model = model_id, "loading weights");
+    let model = Qwen2::load(dir, config)?;
+    tracing::info!(prompt_tokens = ids.len(), "generating");
+
+    let started = std::time::Instant::now();
+    let prompt_arr = mlx_rs::Array::from_slice(&ids, &[1, ids.len() as i32]);
+    let mut generator = Generator::new(&model);
+    let mut streamed = String::new();
+    let out_tokens = generator.generate(&prompt_arr, max_tokens, &EOS_IDS, |tok| {
+        if let Ok(piece) = tokenizer.decode(&[tok], true) {
+            streamed.push_str(&piece);
+        }
+    })?;
+    let elapsed = started.elapsed();
+    let text = tokenizer
+        .decode(&out_tokens, true)
+        .map_err(|e| anyhow::anyhow!("decode output: {e}"))?;
+
+    if stats {
+        let (active, cache, peak) = any2md_mlx::memory_stats()?;
+        let gb = |v: usize| v as f64 / 1024.0 / 1024.0 / 1024.0;
+        eprintln!(
+            "tokens={} time={:.2}s tok/s={:.1} peak={:.2}GB active={:.2}GB cache={:.2}GB",
+            out_tokens.len(),
+            elapsed.as_secs_f64(),
+            out_tokens.len() as f64 / elapsed.as_secs_f64().max(1e-9),
+            gb(peak),
+            gb(active),
+            gb(cache),
+        );
+    }
+
+    if let Some(path) = stats_json {
+        let report = serde_json::json!({
+            "model": model_id,
+            "prompt_tokens": ids.len(),
+            "prompt_first": &ids[..ids.len().min(6)],
+            "prompt_last": &ids[ids.len().saturating_sub(6)..],
+            "generated_tokens": out_tokens,
+            "text": text,
+            "seconds": elapsed.as_secs_f64(),
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+    }
+
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+    std::fs::create_dir_all(output_dir)?;
+    let out_path = output_dir.join(format!("{stem}.md"));
+    let mut file = std::fs::File::create(&out_path)?;
+    writeln!(file, "---")?;
+    writeln!(file, "source: {}", input.display())?;
+    writeln!(file, "model: {model_id}")?;
+    writeln!(file, "---\n")?;
+    write!(file, "{}", text.trim())?;
+    println!("{}", out_path.display());
+
+    drop(model);
+    any2md_mlx::release_memory();
+    Ok(())
+}
+
+/// Largest char boundary <= `idx` (we slice HTML by chars, not bytes).
+fn floor_char_boundary(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}

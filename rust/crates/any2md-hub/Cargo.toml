@@ -1,0 +1,13 @@
+[package]
+name = "any2md-hub"
+description = "Hugging Face Hub resolution/download for the native any2md, sharing the Python cache layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { workspace = true }
+tracing = { workspace = true }

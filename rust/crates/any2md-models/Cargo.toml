@@ -1,0 +1,16 @@
+[package]
+name = "any2md-models"
+description = "Native MLX model implementations for any2md (Qwen2/ReaderLM first)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+any2md-mlx = { workspace = true }
+any2md-hub = { workspace = true }
+mlx-rs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokenizers = { workspace = true }
+tracing = { workspace = true }
