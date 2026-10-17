@@ -29,6 +29,8 @@ from typing_extensions import Annotated
 
 from any2md.common import (
     build_frontmatter,
+    configure_mlx_memory,
+    release_mlx_memory,
     setup_logging,
     OutputFormat,
     write_output,
@@ -255,6 +257,7 @@ def main(
     on Apple Silicon via mlx-lm.
     """
     setup_logging(verbose)
+    configure_mlx_memory()
 
     # Collect HTML files to process
     input_path = Path(input_path)
@@ -323,6 +326,7 @@ def main(
                 })
             _json.dump(results, sys.stdout, indent=2, default=str)
             sys.stdout.write("\n")
+        release_mlx_memory()
         return
 
     # Process each file
@@ -335,6 +339,9 @@ def main(
             fmt=format,
         )
         typer.echo(str(out), err=True)
+
+    del reader_model, tokenizer
+    release_mlx_memory()
 
 
 if __name__ == "__main__":

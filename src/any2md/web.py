@@ -28,7 +28,17 @@ from typing import Dict, Optional, Tuple
 import typer
 from typing_extensions import Annotated
 
-from any2md.common import build_frontmatter, setup_logging, OutputFormat, write_output, is_json_mode, write_json_error, write_json_output
+from any2md.common import (
+    build_frontmatter,
+    configure_mlx_memory,
+    is_json_mode,
+    OutputFormat,
+    release_mlx_memory,
+    setup_logging,
+    write_json_error,
+    write_json_output,
+    write_output,
+)
 
 # Configure logging (will be overridden by setup_logging in main)
 logging.basicConfig(
@@ -415,6 +425,7 @@ def main(
     on Apple Silicon via mlx-lm.
     """
     setup_logging(verbose)
+    configure_mlx_memory()
 
     # Fetch HTML
     logger.info("Fetching URL: %s", url)
@@ -441,6 +452,8 @@ def main(
 
     if json_output or is_json_mode():
         write_json_output(metadata, markdown_content, url, "web", fields)
+        del reader_model, tokenizer
+        release_mlx_memory()
         return
 
     # Determine output filename
@@ -459,6 +472,8 @@ def main(
     write_output(content, output_file)
     logger.info("Output saved to: %s", output_file)
     typer.echo(str(output_file), err=True)
+    del reader_model, tokenizer
+    release_mlx_memory()
 
 
 if __name__ == "__main__":

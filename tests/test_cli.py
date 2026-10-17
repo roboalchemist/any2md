@@ -9,6 +9,46 @@ import unittest
 from any2md import __version__
 
 
+class TestJsonStdoutPurity(unittest.TestCase):
+    """stdout must contain nothing but the converted data / JSON payload.
+
+    Guards against library print() noise (PyMuPDF deprecation notice, parser
+    messages, MLX warnings) corrupting --json output.
+    """
+
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable, "-m", "any2md.cli", *args],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_csv_json_is_valid(self):
+        import json
+        with tempfile.NamedTemporaryFile(suffix=".csv", mode="w", delete=False) as f:
+            f.write("name,value\nfoo,1\nbar,2\n")
+            path = f.name
+        try:
+            result = self._run("csv", path, "--json")
+        finally:
+            os.unlink(path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["converter"], "csv")
+
+    def test_pdf_json_is_valid_and_pages_are_1_based(self):
+        """PyMuPDF's parser messages must not reach stdout (they default to it)."""
+        import json
+        fixture = os.path.join(os.path.dirname(__file__), "fixtures", "sample.pdf")
+        result = self._run("pdf", fixture, "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["converter"], "pdf")
+        self.assertEqual(payload["frontmatter"]["pages"], 1)
+        self.assertIn("## Page 1", payload["content"])
+        self.assertNotIn("## Page 2", payload["content"])
+
+
 class TestSilentFlag(unittest.TestCase):
     """Test --silent as a synonym for --quiet (GNU compliance)."""
 

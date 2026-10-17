@@ -286,10 +286,13 @@ DEFAULT_MLX_CACHE_LIMIT_GB = 2.0
 
 
 def _mlx_core():
-    try:
-        import mlx.core as mx
-    except ImportError:
-        return None
+    """Return mlx.core only if it is already imported (never pull it in here).
+
+    Importing mlx.core costs ~150 ms, which would be paid by converters that
+    never touch MLX (csv, data, db, ...). Every MLX-using path has it loaded
+    by the time it calls into this module.
+    """
+    mx = sys.modules.get("mlx.core")
     return mx
 
 
@@ -302,7 +305,7 @@ def _mlx_fn(mx, name: str):
 
 
 def configure_mlx_memory() -> None:
-    """Cap MLX's buffer cache. Idempotent; a no-op when MLX isn't installed."""
+    """Cap MLX's buffer cache. Idempotent; a no-op when MLX isn't loaded yet."""
     mx = _mlx_core()
     if mx is None:
         return

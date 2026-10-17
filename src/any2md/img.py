@@ -27,7 +27,16 @@ from typing import List, Optional, Tuple
 import typer
 from typing_extensions import Annotated
 
-from any2md.common import build_frontmatter, setup_logging, write_output, is_json_mode, write_json_error, write_json_output
+from any2md.common import (
+    build_frontmatter,
+    configure_mlx_memory,
+    is_json_mode,
+    release_mlx_memory,
+    setup_logging,
+    write_json_error,
+    write_json_output,
+    write_output,
+)
 
 # mlx-vlm imports — loaded at module level so tests can patch img2md.generate etc.
 # Falls back gracefully if mlx-vlm is not installed; ImportError is raised at call time.
@@ -363,6 +372,7 @@ def main(
     images in a batch, writing one output file per image.
     """
     setup_logging(verbose)
+    configure_mlx_memory()
 
     if not input_path.exists():
         if is_json_mode():
@@ -446,6 +456,7 @@ def main(
                 })
             _json.dump(results, sys.stdout, indent=2, default=str)
             sys.stdout.write("\n")
+        release_mlx_memory()
         return
 
     output_paths = []
@@ -474,6 +485,8 @@ def main(
     )
     if failed:
         logger.warning("Failed images: %s", [str(p) for p in failed])
+    del vlm_model, processor, config
+    release_mlx_memory()
 
 
 if __name__ == "__main__":
