@@ -269,6 +269,77 @@ def cmd_asr(args) -> int:
     return 0
 
 
+def _der(reference, hypothesis, duration, frame=0.01):
+    """Frame-level diarization error rate with a global speaker mapping."""
+    import numpy as np
+
+    n = int(duration / frame)
+
+    def labels(segs):
+        lab = np.full(n, -1, dtype=np.int32)
+        for start, end, spk in segs:
+            lab[max(0, int(round(start / frame))) : min(n, int(round(end / frame)))] = spk
+        return lab
+
+    ref = labels(reference)
+    hyp = labels(hypothesis)
+    ref_spk = sorted({int(x) for x in ref if x >= 0})
+    hyp_spk = sorted({int(x) for x in hyp if x >= 0})
+    mapping = {}
+    for hs in hyp_spk:
+        best, best_n = -1, 0
+        for rs in ref_spk:
+            overlap = int(np.sum((hyp == hs) & (ref == rs)))
+            if overlap > best_n:
+                best, best_n = rs, overlap
+        mapping[hs] = best
+    mapped = np.array([mapping.get(int(x), -1) if x >= 0 else -1 for x in hyp])
+    speech = ref >= 0
+    total = max(int(speech.sum()), 1)
+    miss = int(np.sum(speech & (mapped < 0)))
+    fa = int(np.sum((~speech) & (mapped >= 0)))
+    conf = int(np.sum(speech & (mapped >= 0) & (mapped != ref)))
+    return (miss + fa + conf) / total, len(ref_spk), len(hyp_spk)
+
+
+def cmd_diarize(args) -> int:
+    """Compare native Nemotron-3 segments against Python with a DER gate."""
+    import subprocess
+    import wave
+
+    from mlx_audio.vad import load
+
+    model = load(args.model)
+    failures = 0
+    for wav in args.inputs:
+        with wave.open(wav) as w:
+            duration = w.getnframes() / w.getframerate()
+        ref = model.generate(wav)
+        reference = [[s.start, s.end, s.speaker] for s in ref.segments]
+
+        subprocess.run(
+            [args.binary, "diarize", wav, "--out", args.segments_json],
+            check=True,
+            capture_output=True,
+        )
+        rust = json.load(open(args.segments_json, encoding="utf-8"))
+        hypothesis = [[s["start"], s["end"], s["speaker"]] for s in rust["segments"]]
+
+        der, ref_spk, hyp_spk = _der(reference, hypothesis, duration)
+        ok = der <= args.max_der and ref_spk == hyp_spk
+        print(
+            f"{'OK  ' if ok else 'FAIL'} {wav.split('/')[-1]:24s} "
+            f"DER={der:.2%} speakers py={ref_spk} rs={hyp_spk} "
+            f"segments py={len(reference)} rs={len(hypothesis)}"
+        )
+        failures += 0 if ok else 1
+    if failures:
+        print(f"DIARIZATION PARITY FAILED ({failures}/{len(args.inputs)})")
+        return 1
+    print("DIARIZATION PARITY OK")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -339,6 +410,18 @@ def main() -> int:
         default=["tests/audio/zh_short.wav", "tests/audio/zh_two_speakers.wav"],
     )
     asr.set_defaults(func=cmd_asr)
+
+    diar = sub.add_parser("diarize", help="compare native Nemotron-3 segments with Python (DER)")
+    diar.add_argument("--binary", default="rust/target/release/any2md-rs")
+    diar.add_argument("--model", default="mlx-community/Nemotron-3-Diarization")
+    diar.add_argument("--segments-json", default="/tmp/any2md-parity-diar.json")
+    diar.add_argument("--max-der", type=float, default=0.12)
+    diar.add_argument(
+        "inputs",
+        nargs="*",
+        default=["tests/audio/two_speakers.wav", "tests/audio/yt_interview.wav"],
+    )
+    diar.set_defaults(func=cmd_diarize)
 
     args = parser.parse_args()
     return args.func(args)

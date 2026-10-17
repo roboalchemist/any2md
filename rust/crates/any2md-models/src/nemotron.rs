@@ -52,7 +52,22 @@ pub struct ModulesCfg {
     pub chunk_len: i32,
     pub fifo_len: i32,
     pub spkcache_len: i32,
+    pub spkcache_update_period: i32,
     pub chunk_right_context: i32,
+    #[serde(default)]
+    pub spkcache_sil_frames_per_spk: i32,
+    #[serde(default)]
+    pub pred_score_threshold: f32,
+    #[serde(default)]
+    pub scores_boost_latest: f32,
+    #[serde(default)]
+    pub strong_boost_rate: f32,
+    #[serde(default)]
+    pub weak_boost_rate: f32,
+    #[serde(default)]
+    pub min_pos_scores_rate: f32,
+    #[serde(default)]
+    pub max_index: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -270,14 +285,12 @@ impl Nemotron {
         })
     }
 
-    /// `mel` is `[T, n_mels]`; returns `(features, valid_frames)` where features
-    /// are `[1, T/8, d_model]`.
-    pub fn encode(&self, mel: &Array, lengths: Option<i32>) -> Result<(Array, i32)> {
+    /// Feature stacking: `[1, n_mels, T]` (checkpoint convention) -> `[1, T/8, d_model]`.
+    pub fn pre_encode(&self, features: &Array) -> Result<(Array, i32)> {
         let enc = &self.config.encoder_config;
         let factor = enc.subsampling_factor;
-        let x = mel.expand_dims(0)?; // [1, T, feat_in]
-
-        // FeatureStacking: pad time to a multiple of `factor`, flatten f*factor
+        // checkpoint layout is [B, mels, T]; move time to the last axis
+        let x = features.transpose_axes(&[0, 2, 1])?; // [1, T, mels]
         let t = x.shape()[1];
         let pad = (factor - t % factor) % factor;
         let x = if pad > 0 {
@@ -288,26 +301,41 @@ impl Nemotron {
         };
         let t2 = x.shape()[1];
         let x = x.reshape(&[1, t2 / factor, enc.feat_in * factor])?;
-        let mut h = self.pre_encode.forward(&x)?; // bias-free linear
-        let out_len = lengths.map(|l| (l + factor - 1) / factor).unwrap_or(t2 / factor);
+        let h = self.pre_encode.forward(&x)?; // bias-free linear
+        Ok((h, t2 / factor))
+    }
 
+    /// Run the transformer stack over stacked features, masking positions >= len.
+    pub fn encoder_forward(&self, stacked: &Array, len: i32) -> Result<Array> {
+        let enc = &self.config.encoder_config;
+        let mut h = stacked.clone();
         if enc.xscaling {
             h = h.multiply(&Array::from_f32((enc.d_model as f32).sqrt()))?;
         }
         if let Some(norm) = &self.embed_norm {
             h = norm.forward(&h)?;
         }
-
-        // boolean key mask [1, 1, 1, T] (True = attend)
-        let mut m = vec![false; out_len as usize];
-        m.iter_mut().for_each(|v| *v = true);
-        let mask = Array::from_slice(&m, &[1, 1, 1, out_len]);
+        let tmax = h.shape()[1];
+        let clamped = len.min(tmax).max(0);
+        let mask_vec: Vec<bool> = (0..tmax).map(|i| i < clamped).collect();
+        let mask = Array::from_slice(&mask_vec, &[1, 1, 1, tmax]);
 
         let head_dim = enc.d_model / enc.n_heads;
         for block in &self.blocks {
             h = block.forward(&h, &mask, enc.n_heads, head_dim, enc.rope_base)?;
         }
-        Ok((self.final_norm.forward(&h)?, out_len))
+        Ok(self.final_norm.forward(&h)?)
+    }
+
+    /// `mel` is `[T, n_mels]` (time-major, our mel pipeline); returns features
+    /// `[1, T/8, d_model]` and the valid encoder-frame count.
+    pub fn encode(&self, mel: &Array, lengths: Option<i32>) -> Result<(Array, i32)> {
+        let factor = self.config.encoder_config.subsampling_factor;
+        let (stacked, full_len) = self.pre_encode(&mel.expand_dims(0)?.transpose_axes(&[0, 2, 1])?)?;
+        let len = lengths
+            .map(|l| (l + factor - 1) / factor)
+            .unwrap_or(full_len);
+        Ok((self.encoder_forward(&stacked, len)?, len))
     }
 }
 

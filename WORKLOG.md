@@ -57,9 +57,24 @@ boolean key mask, gelu FFN) -> final_norm -> speaker head (encoder_proj
 restores 8x time, ReLU -> 192 -> 8 -> sigmoid). Parity on a random 800-frame
 mel: encoder max|diff| 9e-6 (rel 1.2e-6), speaker preds max|diff| 7e-9.
 
-Remaining: Nemotron streaming loop (27.2 s windows, 2720-frame central windows
-with 320 right context, AOSC spkcache/fifo compression + global-index mel), the
-Sortformer streaming path, DER gate, packaging/release docs, merge to `main`.
+Nemotron streaming: ported and certified (`nemotron_stream.rs`). Snags worth
+remembering:
+- segments must be computed **once over the concatenated probability timeline**,
+  not per window (upstream `generate()` concatenates every window's central
+  preds and calls `_preds_to_segments` once) -- per-window conversion invents
+  breaks at window boundaries and loses the global sort;
+- `state.fifo_preds` is *rebuilt* each step (`low[cache..start]` +
+  `low[start..start+n]`), not appended to;
+- queued predictions must be masked past `(chunk_len + cache + fifo) * factor`,
+  and segment times need the window start offset;
+- the checkpoint's own `preprocessor.fb/window` are used, and the mel is
+  globally indexed (frames `start..start+count`, zeroed past `total//hop`).
+DER vs Python: 0.32% on the 44 s two-speaker clip (8/8 segments, 2/2 speakers),
+10.5% on the 90 s interview where the only material difference is the final
+speaker label (81.6-90 s) -- miss/FA stay below 0.5%.
+
+Remaining: the Sortformer streaming path (any2md drives it through chunked
+`generate_stream` + cross-chunk merge), packaging/release docs, merge to `main`.
 
 Gates: `make rust-parity` → mel, LID, STT (WER) and ReaderLM parity.
 

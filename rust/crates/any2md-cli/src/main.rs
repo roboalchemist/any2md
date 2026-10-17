@@ -67,6 +67,23 @@ enum Command {
         #[arg(long, default_value = "bf16")]
         dtype: String,
     },
+    /// Diarize a 16 kHz mono WAV (Nemotron-3)
+    Diarize {
+        /// 16 kHz mono WAV file
+        input: PathBuf,
+        /// Model id
+        #[arg(short = 'm', long, default_value = any2md_models::nemotron::DEFAULT_MODEL)]
+        model: String,
+        /// Emit segments as JSON
+        #[arg(long)]
+        json: bool,
+        /// Print timings and memory to stderr
+        #[arg(long)]
+        stats: bool,
+        /// Write the full JSON report here
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Run the Nemotron encoder on a raw mel tensor (parity debugging)
     NemotronEncode {
         /// Model id
@@ -184,6 +201,9 @@ fn main() -> Result<()> {
             chunk_duration,
             &dtype,
         ),
+        Command::Diarize { input, model, json, stats, out } => {
+            diarize_wav(&input, &model, json, stats, out.as_deref())
+        }
         Command::NemotronEncode { model, input_tensor, out, preds_out } => {
             nemotron_encode(&model, &input_tensor, &out, preds_out.as_deref())
         }
@@ -354,6 +374,22 @@ fn dump_mel(input: &Path, kind: &str, out: &Path) -> Result<()> {
     let mel = match kind {
         "whisper" => any2md_audio::whisper_mel(&audio, 80)?,
         "nemo" => any2md_audio::nemo_mel(&audio, &any2md_audio::NemoMel::parakeet())?,
+        "nemotron" => {
+            let cfg_path = any2md_hub::get_file(
+                any2md_models::nemotron::DEFAULT_MODEL,
+                "config.json",
+            )?;
+            let cfg = any2md_models::nemotron::DiarConfig::from_json(&std::fs::read_to_string(
+                &cfg_path,
+            )?)?;
+            let w = any2md_mlx::Weights::load_dir(cfg_path.parent().context("dir")?)?;
+            let fm = any2md_models::nemotron_stream::NemotronMel::from_weights(&w, &cfg)?;
+            let samples: Vec<f32> = audio.as_slice::<f32>().to_vec();
+            let total = samples.len() as i64;
+            fm.features(&samples, 0, (samples.len() / 160 + 1) as i32, 0, total)?
+                .squeeze_axes(&[0])?
+                .transpose_axes(&[1, 0])?
+        }
         other => anyhow::bail!("unknown mel kind {other:?} (whisper|nemo)"),
     };
     mel.eval()?;
@@ -625,4 +661,51 @@ fn read_f32_tensor(path: &Path) -> Result<any2md_mlx::Array> {
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect();
     Ok(any2md_mlx::Array::from_slice(&data, &dims))
+}
+
+/// Diarize a WAV with the native Nemotron-3 port.
+fn diarize_wav(input: &Path, model_id: &str, json: bool, stats: bool, out: Option<&Path>) -> Result<()> {
+    let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
+    let config = any2md_models::nemotron::DiarConfig::from_json(&std::fs::read_to_string(&cfg_path)?)?;
+    let dir = cfg_path.parent().context("config has no parent dir")?;
+    let audio = any2md_audio::read_wav_16k(input)?;
+
+    let started = std::time::Instant::now();
+    let diar = any2md_models::Diarizer::load(dir, config)?;
+    let segments = diar.generate(&audio)?;
+    let elapsed = started.elapsed().as_secs_f64();
+
+    if stats {
+        let (active, cache, peak) = any2md_mlx::memory_stats()?;
+        let gb = |v: usize| v as f64 / 1024.0 / 1024.0 / 1024.0;
+        let speakers: std::collections::BTreeSet<usize> =
+            segments.iter().map(|s| s.speaker).collect();
+        eprintln!(
+            "segments={} speakers={} time={elapsed:.2}s peak={:.2}GB active={:.2}GB cache={:.2}GB",
+            segments.len(),
+            speakers.len(),
+            gb(peak),
+            gb(active),
+            gb(cache),
+        );
+    }
+    let report = serde_json::json!({
+        "model": model_id,
+        "source": input.display().to_string(),
+        "seconds": elapsed,
+        "segments": segments.iter().map(|s| serde_json::json!({
+            "start": s.start, "end": s.end, "speaker": s.speaker,
+        })).collect::<Vec<_>>(),
+    });
+    if let Some(path) = out {
+        std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        for s in &segments {
+            println!("{:8.2} - {:8.2}  SPEAKER_{}", s.start, s.end, s.speaker);
+        }
+    }
+    Ok(())
 }
