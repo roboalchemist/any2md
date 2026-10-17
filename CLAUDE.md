@@ -56,6 +56,36 @@ any2md/
 
 **Total**: ~10,000 lines of source code across 20 modules plus memory-profiling and model-download scripts.
 
+## Native Rust port (`rust/`)
+
+A parallel native implementation lives under `rust/` and builds the
+`any2md-rs` binary. It talks to MLX through **mlx-rs / mlx-c** (no Python at
+runtime) and is certified against the Python code by `make rust-parity`.
+
+```
+rust/crates/
+  any2md-mlx/     MLX init + memory policy, safetensors Weights, Dense/Quant* layers
+  any2md-hub/     huggingface_hub cache resolution + download
+  any2md-audio/   WAV reader, STFT, whisper/NeMo mel front-ends
+  any2md-models/  qwen2.rs (ReaderLM), whisper.rs (LID), parakeet.rs + chunk.rs (STT),
+                  qwen3asr.rs (ASR), nemotron.rs + nemotron_stream.rs,
+                  sortformer.rs, diarize.rs (shared segment logic), aosc.rs
+  any2md-cli/     clap CLI: html, stt, asr, lid, mel, diarize, nemotron-encode
+rust/parity/parity.py   Python-vs-Rust gates (mel, LID, WER, ASR, DER, markdown)
+rust/assets/            generated mel filterbanks (shared matrices)
+```
+
+Conventions that matter when extending it:
+
+- Diarization frames are 80 ms for Sortformer (`hop 160 * subsampling 8`) and
+  10 ms for Nemotron's speaker head; segment times must use the right one.
+- Sortformer runs in **fp16** (the checkpoint dtype, and upstream casts the mel
+  to it); Nemotron runs in **bf16 weights promoted to f32 activations**.
+- AOSC compression (`aosc.rs`) flattens scores **speaker-major** before the
+  global top-k — the frame index is `flat_index % n_frames` only in that layout.
+- Per-chunk mel (Sortformer) vs globally indexed mel over a retained PCM
+  suffix (Nemotron) are not interchangeable.
+
 ## Key Libraries & Dependencies
 
 | Library | Purpose | Optional Group | llm-code-docs |

@@ -1,0 +1,26 @@
+{
+  "mel_whisper_128": {
+    "shape": [
+      128,
+      201
+    ],
+    "dtype": "float32",
+    "source": "mlx_audio.utils.mel_filters(16000, 400, 128, norm=slaney, mel_scale=None)"
+  },
+  "mel_whisper_80": {
+    "shape": [
+      80,
+      201
+    ],
+    "dtype": "float32",
+    "source": "mlx_audio.utils.mel_filters(16000, 400, 80, norm=slaney, mel_scale=None)"
+  },
+  "mel_nemo_512_128": {
+    "shape": [
+      128,
+      257
+    ],
+    "dtype": "float32",
+    "source": "mlx_audio.utils.mel_filters(16000, 512, 128, norm=slaney, mel_scale=slaney)"
+  }
+}

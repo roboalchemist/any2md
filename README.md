@@ -116,6 +116,64 @@ src/any2md/
 
 All tools produce YAML frontmatter with source metadata followed by the converted markdown body.
 
+## Native Rust binary (`any2md-rs`)
+
+`rust/` contains a native port that runs MLX through **mlx-c / mlx-rs** — no
+Python at runtime. It is a separate binary (`any2md-rs`) built from the same
+repository, and its output is certified against the Python implementation on
+the repo fixtures.
+
+```bash
+make rust-build            # cargo build --release (mlx-sys builds MLX from source)
+rust/target/release/any2md-rs --help
+```
+
+```bash
+# HTML -> markdown with ReaderLM (native generation loop)
+any2md-rs html page.html -o page.md
+
+# Speech recognition (Parakeet TDT), chunked long-audio path
+any2md-rs stt interview.wav
+
+# Multilingual recognition (Qwen3-ASR)
+any2md-rs asr chinese.wav
+
+# Language identification (Whisper)
+any2md-rs lid clip.wav
+
+# Diarization (Nemotron-3 by default, or Sortformer)
+any2md-rs diarize podcast.wav
+any2md-rs diarize podcast.wav --model mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16
+```
+
+Weights come from the Hugging Face cache (`huggingface_hub` layout), so models
+already downloaded by the Python CLI are reused as-is.
+
+### What is ported
+
+| Python path | Native module | Certification |
+|---|---|---|
+| ReaderLM v2 HTML→markdown | `qwen2.rs` | byte-identical markdown on `sample.html` |
+| Parakeet TDT (`stt`) | `parakeet.rs`, `chunk.rs` | token-identical on three fixtures (WER 0.00%) |
+| Qwen3-ASR (`asr`) | `qwen3asr.rs` | token-identical on both Chinese fixtures |
+| Whisper LID (`lid`) | `whisper.rs` | same language on 4/4 fixtures, Δprob ≤ 8e-3 |
+| Nemotron-3 diarization | `nemotron.rs`, `nemotron_stream.rs` | DER 0.03% / 0.16% vs Python |
+| Sortformer v2.1 diarization | `sortformer.rs` | DER 0.00% / 0.47% vs Python |
+
+### Certification harness
+
+```bash
+make rust-parity   # mel, LID, STT (WER), ASR, ReaderLM, diarization (DER)
+```
+
+`rust/parity/parity.py` runs both implementations and fails the gate on WER,
+DER, speaker-count disagreement, mel drift or markdown divergence, so a silent
+quality regression cannot ship. The Python side stays the reference; the Rust
+side is checked against it on `tests/audio/` and `tests/fixtures/`.
+
+Long audio stays bounded: the 82-minute podcast diarizes in 22.9 s / 1.39 GB
+(Sortformer) and 6.8 s / 1.21 GB (Nemotron) natively.
+
 ## Pre-download AI models
 
 ```bash

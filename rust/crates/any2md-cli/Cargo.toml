@@ -1,0 +1,23 @@
+[package]
+name = "any2md-cli"
+description = "Native any2md CLI (Rust + MLX)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "any2md-rs"
+path = "src/main.rs"
+
+[dependencies]
+any2md-mlx = { workspace = true }
+any2md-hub = { workspace = true }
+any2md-models = { workspace = true }
+any2md-audio = { workspace = true }
+mlx-rs = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokenizers = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
