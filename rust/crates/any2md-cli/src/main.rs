@@ -83,6 +83,9 @@ enum Command {
         /// Write the full JSON report here
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Dump per-chunk speaker probabilities (Sortformer parity debugging)
+        #[arg(long)]
+        probs_out: Option<PathBuf>,
     },
     /// Run the Nemotron encoder on a raw mel tensor (parity debugging)
     NemotronEncode {
@@ -201,8 +204,8 @@ fn main() -> Result<()> {
             chunk_duration,
             &dtype,
         ),
-        Command::Diarize { input, model, json, stats, out } => {
-            diarize_wav(&input, &model, json, stats, out.as_deref())
+        Command::Diarize { input, model, json, stats, out, probs_out } => {
+            diarize_wav(&input, &model, json, stats, out.as_deref(), probs_out.as_deref())
         }
         Command::NemotronEncode { model, input_tensor, out, preds_out } => {
             nemotron_encode(&model, &input_tensor, &out, preds_out.as_deref())
@@ -374,6 +377,26 @@ fn dump_mel(input: &Path, kind: &str, out: &Path) -> Result<()> {
     let mel = match kind {
         "whisper" => any2md_audio::whisper_mel(&audio, 80)?,
         "nemo" => any2md_audio::nemo_mel(&audio, &any2md_audio::NemoMel::parakeet())?,
+        "sortformer" => {
+            let cfg_path = any2md_hub::get_file(
+                any2md_models::sortformer::DEFAULT_MODEL,
+                "config.json",
+            )?;
+            let cfg = any2md_models::sortformer::SortformerConfig::from_json(
+                &std::fs::read_to_string(&cfg_path)?,
+            )?;
+            let proc = &cfg.processor_config;
+            let mut mel = any2md_audio::NemoMel::sortformer();
+            mel.sample_rate = proc.sampling_rate as usize;
+            mel.n_fft = proc.n_fft as usize;
+            mel.hop = proc.hop_length as usize;
+            mel.win_length = proc.win_length as usize;
+            mel.n_mels = proc.feature_size as usize;
+            mel.preemph = proc.preemphasis;
+            mel.normalize = "none".into();
+            mel.pad_to = 0;
+            any2md_audio::nemo_mel(&audio, &mel)?
+        }
         "nemotron" => {
             let cfg_path = any2md_hub::get_file(
                 any2md_models::nemotron::DEFAULT_MODEL,
@@ -664,15 +687,34 @@ fn read_f32_tensor(path: &Path) -> Result<any2md_mlx::Array> {
 }
 
 /// Diarize a WAV with the native Nemotron-3 port.
-fn diarize_wav(input: &Path, model_id: &str, json: bool, stats: bool, out: Option<&Path>) -> Result<()> {
-    let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
-    let config = any2md_models::nemotron::DiarConfig::from_json(&std::fs::read_to_string(&cfg_path)?)?;
-    let dir = cfg_path.parent().context("config has no parent dir")?;
+fn diarize_wav(
+    input: &Path,
+    model_id: &str,
+    json: bool,
+    stats: bool,
+    out: Option<&Path>,
+    probs_out: Option<&Path>,
+) -> Result<()> {
     let audio = any2md_audio::read_wav_16k(input)?;
+    let is_sortformer = model_id.to_ascii_lowercase().contains("sortformer");
 
     let started = std::time::Instant::now();
-    let diar = any2md_models::Diarizer::load(dir, config)?;
-    let segments = diar.generate(&audio)?;
+    let segments = if is_sortformer {
+        let diar = any2md_models::sortformer::load_diarizer(model_id)?;
+        let samples: Vec<f32> = audio.as_slice::<f32>().to_vec();
+        let (segments, probs) = diar.generate_with_probs(&samples)?;
+        if let Some(path) = probs_out {
+            std::fs::write(path, serde_json::to_vec(&probs)?)?;
+        }
+        segments
+    } else {
+        let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
+        let config =
+            any2md_models::nemotron::DiarConfig::from_json(&std::fs::read_to_string(&cfg_path)?)?;
+        let dir = cfg_path.parent().context("config has no parent dir")?;
+        let diar = any2md_models::Diarizer::load(dir, config)?;
+        diar.generate(&audio)?
+    };
     let elapsed = started.elapsed().as_secs_f64();
 
     if stats {

@@ -302,41 +302,191 @@ def _der(reference, hypothesis, duration, frame=0.01):
     return (miss + fa + conf) / total, len(ref_spk), len(hyp_spk)
 
 
+def _python_segments(model_name: str, wav: str):
+    """Reference segments for one fixture, along the path any2md actually uses.
+
+    - Nemotron-3: full-clip ``generate()`` (bounded internal streaming windows).
+    - Sortformer: ``generate_stream()`` fed 10 s WAV chunks, then the 0.3 s
+      same-speaker merge any2md applies.
+    """
+    from mlx_audio.vad import load
+
+    model = load(model_name)
+    if "sortformer" in model_name.lower():
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+        from any2md.yt import _iter_wav_chunks, _merge_diarization_segments
+
+        segments = []
+        for result in model.generate_stream(_iter_wav_chunks(wav, 10.0)):
+            segments.extend(result.segments)
+        return [[s.start, s.end, s.speaker] for s in _merge_diarization_segments(segments)]
+    result = model.generate(wav)
+    return [[s.start, s.end, s.speaker] for s in result.segments]
+
+
+def _windowed_der(reference, hypothesis, duration, frame=0.01, window=30.0):
+    """DER with a speaker mapping chosen per window.
+
+    Streaming diarizers can permute speaker identities mid-recording, so a
+    single file-wide mapping reports confusion that is not a segmentation
+    error. A 30 s window is long enough for identities to be stable and short
+    enough that a swap does not span it.
+    """
+    import numpy as np
+
+    n = int(duration / frame)
+    w = int(window / frame)
+
+    def labels(segs):
+        lab = np.full(n, -1, dtype=np.int32)
+        for start, end, spk in segs:
+            lab[max(0, int(round(start / frame))) : min(n, int(round(end / frame)))] = spk
+        return lab
+
+    ref = labels(reference)
+    hyp = labels(hypothesis)
+    err = total = speech_err = speech_total = 0
+    for start in range(0, n, w):
+        rr = ref[start : start + w]
+        hh = hyp[start : start + w]
+        if len(rr) == 0:
+            continue
+        ref_spk = sorted({int(x) for x in rr if x >= 0})
+        hyp_spk = sorted({int(x) for x in hh if x >= 0})
+        mapping = {}
+        for hs in hyp_spk:
+            best, best_n = -1, 0
+            for rs in ref_spk:
+                overlap = int(np.sum((hh == hs) & (rr == rs)))
+                if overlap > best_n:
+                    best, best_n = rs, overlap
+            mapping[hs] = best
+        mapped = np.array([mapping.get(int(x), -1) if x >= 0 else -1 for x in hh])
+        speech = rr >= 0
+        total += max(int(speech.sum()), 1)
+        err += (
+            int(np.sum(speech & (mapped < 0)))
+            + int(np.sum((~speech) & (mapped >= 0)))
+            + int(np.sum(speech & (mapped >= 0) & (mapped != rr)))
+        )
+        speech_err += int(np.sum(speech != (hh >= 0)))
+        speech_total += len(rr)
+    return err / total, speech_err / max(speech_total, 1)
+
+
+def cmd_diarize_long(args) -> int:
+    """Long-audio regression gate (bounded memory/time + permutation-invariant DER).
+
+    Exact segment parity is not attainable over an hour of streaming: both
+    implementations feed their own predictions back into the speaker cache, so
+    a f16-level difference in the mel eventually flips a speaker identity and
+    the trajectories separate. What must stay stable is:
+      - the same speaker count (within one),
+      - comparable segmentation (30 s-window DER),
+      - the same speech/non-speech decision,
+      - bounded memory and time.
+    """
+    import subprocess
+    import time
+    import wave
+
+    failures = 0
+    with wave.open(args.long_input) as w:
+        duration = w.getnframes() / w.getframerate()
+    for label, model_name in (
+        ("nemotron", args.model),
+        ("sortformer", args.sortformer_model),
+    ):
+        reference = _python_segments(model_name, args.long_input)
+        started = time.time()
+        result = subprocess.run(
+            [
+                args.binary,
+                "diarize",
+                args.long_input,
+                "--model",
+                model_name,
+                "--out",
+                args.segments_json,
+                "--stats",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        elapsed = time.time() - started
+        rust = json.load(open(args.segments_json, encoding="utf-8"))
+        hypothesis = [[s["start"], s["end"], s["speaker"]] for s in rust["segments"]]
+        der, speech = _windowed_der(reference, hypothesis, duration)
+        ref_spk = len({s[2] for s in reference})
+        hyp_spk = len({s[2] for s in hypothesis})
+        ok = (
+            abs(ref_spk - hyp_spk) <= 1
+            and der <= args.max_long_der
+            and speech <= args.max_speech_der
+            and elapsed <= args.max_seconds
+        )
+        print(
+            f"{'OK  ' if ok else 'FAIL'} {label:10s} {duration:.0f}s "
+            f"winDER={der:.2%} speech={speech:.2%} speakers py={ref_spk} rs={hyp_spk} "
+            f"segments py={len(reference)} rs={len(hypothesis)} wall={elapsed:.1f}s"
+        )
+        if args.stats:
+            print("      " + (result.stderr.strip().splitlines() or [""])[-1])
+        failures += 0 if ok else 1
+    if failures:
+        print("LONG-AUDIO DIARIZATION FAILED")
+        return 1
+    print("LONG-AUDIO DIARIZATION OK")
+    return 0
+
+
 def cmd_diarize(args) -> int:
-    """Compare native Nemotron-3 segments against Python with a DER gate."""
+    """Compare native diarization segments against Python with a DER gate."""
     import subprocess
     import wave
 
-    from mlx_audio.vad import load
-
-    model = load(args.model)
+    models = [("nemotron", args.model), ("sortformer", args.sortformer_model)]
     failures = 0
-    for wav in args.inputs:
-        with wave.open(wav) as w:
-            duration = w.getnframes() / w.getframerate()
-        ref = model.generate(wav)
-        reference = [[s.start, s.end, s.speaker] for s in ref.segments]
+    checked = 0
+    for label, model_name in models:
+        for wav in args.inputs:
+            with wave.open(wav) as w:
+                duration = w.getnframes() / w.getframerate()
+            reference = _python_segments(model_name, wav)
 
-        subprocess.run(
-            [args.binary, "diarize", wav, "--out", args.segments_json],
-            check=True,
-            capture_output=True,
-        )
-        rust = json.load(open(args.segments_json, encoding="utf-8"))
-        hypothesis = [[s["start"], s["end"], s["speaker"]] for s in rust["segments"]]
+            subprocess.run(
+                [
+                    args.binary,
+                    "diarize",
+                    wav,
+                    "--model",
+                    model_name,
+                    "--out",
+                    args.segments_json,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            rust = json.load(open(args.segments_json, encoding="utf-8"))
+            hypothesis = [[s["start"], s["end"], s["speaker"]] for s in rust["segments"]]
 
-        der, ref_spk, hyp_spk = _der(reference, hypothesis, duration)
-        ok = der <= args.max_der and ref_spk == hyp_spk
-        print(
-            f"{'OK  ' if ok else 'FAIL'} {wav.split('/')[-1]:24s} "
-            f"DER={der:.2%} speakers py={ref_spk} rs={hyp_spk} "
-            f"segments py={len(reference)} rs={len(hypothesis)}"
-        )
-        failures += 0 if ok else 1
+            der, ref_spk, hyp_spk = _der(reference, hypothesis, duration)
+            ok = der <= args.max_der and ref_spk == hyp_spk
+            print(
+                f"{'OK  ' if ok else 'FAIL'} {label:10s} {wav.split('/')[-1]:22s} "
+                f"DER={der:.2%} speakers py={ref_spk} rs={hyp_spk} "
+                f"segments py={len(reference)} rs={len(hypothesis)}"
+            )
+            checked += 1
+            failures += 0 if ok else 1
     if failures:
-        print(f"DIARIZATION PARITY FAILED ({failures}/{len(args.inputs)})")
+        print(f"DIARIZATION PARITY FAILED ({failures}/{checked})")
         return 1
-    print("DIARIZATION PARITY OK")
+    print(f"DIARIZATION PARITY OK across {checked} check(s)")
     return 0
 
 
@@ -414,6 +564,10 @@ def main() -> int:
     diar = sub.add_parser("diarize", help="compare native Nemotron-3 segments with Python (DER)")
     diar.add_argument("--binary", default="rust/target/release/any2md-rs")
     diar.add_argument("--model", default="mlx-community/Nemotron-3-Diarization")
+    diar.add_argument(
+        "--sortformer-model",
+        default="mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16",
+    )
     diar.add_argument("--segments-json", default="/tmp/any2md-parity-diar.json")
     diar.add_argument("--max-der", type=float, default=0.12)
     diar.add_argument(
@@ -422,6 +576,26 @@ def main() -> int:
         default=["tests/audio/two_speakers.wav", "tests/audio/yt_interview.wav"],
     )
     diar.set_defaults(func=cmd_diarize)
+
+    long = sub.add_parser(
+        "diarize-long", help="long-audio gate: bounded memory/time + permutation-invariant DER"
+    )
+    long.add_argument("--binary", default="rust/target/release/any2md-rs")
+    long.add_argument("--model", default="mlx-community/Nemotron-3-Diarization")
+    long.add_argument(
+        "--sortformer-model",
+        default="mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16",
+    )
+    long.add_argument("--segments-json", default="/tmp/any2md-parity-diar-long.json")
+    long.add_argument("--max-long-der", type=float, default=0.25)
+    long.add_argument("--max-speech-der", type=float, default=0.12)
+    long.add_argument("--max-seconds", type=float, default=180.0)
+    long.add_argument("--stats", action="store_true")
+    long.add_argument(
+        "--long-input",
+        default="/private/var/folders/tk/mprjgmzd2yz1sy_c4ggh4rxw0000gn/T/opencode/longform16k.wav",
+    )
+    long.set_defaults(func=cmd_diarize_long)
 
     args = parser.parse_args()
     return args.func(args)

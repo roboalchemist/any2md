@@ -337,11 +337,21 @@ impl Diarizer {
                 None => popped_preds,
             };
             if cache.shape()[1] > modc.spkcache_len {
-                let (c, p) = aosc_compress(
+                let aosc_cfg = crate::aosc::AoscCfg {
+                    num_speakers: modc.num_speakers as usize,
+                    spkcache_len: modc.spkcache_len as usize,
+                    sil_frames_per_spk: modc.spkcache_sil_frames_per_spk.max(0) as usize,
+                    strong_boost_rate: modc.strong_boost_rate,
+                    weak_boost_rate: modc.weak_boost_rate,
+                    min_pos_scores_rate: modc.min_pos_scores_rate,
+                    pred_score_threshold: modc.pred_score_threshold,
+                    scores_boost_latest: modc.scores_boost_latest,
+                };
+                let (c, p) = crate::aosc::compress(
                     &cache,
                     &cache_preds,
                     &self.model.speakers.learnable_sil_emb.reshape(&[1, -1])?,
-                    modc,
+                    &aosc_cfg,
                 )?;
                 cache = c;
                 cache_preds = p;
@@ -407,151 +417,4 @@ fn to_rows(a: &Array) -> Result<Vec<Vec<f32>>> {
     let (frames, spk) = (shape[0] as usize, shape[1] as usize);
     let data = a.as_slice::<f32>();
     Ok((0..frames).map(|i| data[i * spk..(i + 1) * spk].to_vec()).collect())
-}
-
-/// AOSC compression, mirroring `Sortformer._compress_spkcache_aosc`.
-///
-/// Kept in plain Rust on the CPU: the cache is at most a few hundred frames, and
-/// this avoids depending on argpartition/take_along_axis semantics.
-pub fn aosc_compress(
-    embs: &Array,
-    preds: &Array,
-    sil_emb: &Array,
-    cfg: &crate::nemotron::ModulesCfg,
-) -> Result<(Array, Array)> {
-    let embs = &embs.as_dtype(any2md_mlx::Dtype::Float32)?;
-    let preds = &preds.as_dtype(any2md_mlx::Dtype::Float32)?;
-    let sil_emb = &sil_emb.as_dtype(any2md_mlx::Dtype::Float32)?;
-    embs.eval()?;
-    preds.eval()?;
-    sil_emb.eval()?;
-    let esc = embs.shape().to_vec();
-    let psc = preds.shape().to_vec();
-    let (n_frames, emb_dim) = (esc[1], esc[2]);
-    let n_spk = psc[2];
-    let e = embs.as_slice::<f32>();
-    let p = preds.as_slice::<f32>();
-    let sil = sil_emb.as_slice::<f32>();
-
-    let n_spk_us = n_spk as usize;
-    let cache_len = cfg.spkcache_len as usize;
-    let sil_per_spk = 1usize; // spkcache_sil_frames_per_spk for this checkpoint
-    let per_spk = cache_len / n_spk_us - sil_per_spk;
-    let strong = (per_spk as f32 * 0.75).floor() as usize;
-    let weak = (per_spk as f32 * 1.5).floor() as usize;
-    let min_pos = (per_spk as f32 * 0.5).floor() as usize;
-    let threshold = 0.25f32;
-    let boost_latest = 0.05f32;
-    let n = n_frames as usize;
-
-    // 1. log-likelihood-ratio scores
-    let mut scores = vec![0f32; n * n_spk_us];
-    for i in 0..n {
-        let mut sum_log_1p = 0f32;
-        for k in 0..n_spk_us {
-            let v = p[i * n_spk_us + k];
-            sum_log_1p += (1.0 - v).max(threshold).ln();
-        }
-        for k in 0..n_spk_us {
-            let v = p[i * n_spk_us + k];
-            scores[i * n_spk_us + k] =
-                v.max(threshold).ln() - (1.0 - v).max(threshold).ln() + sum_log_1p
-                    - 0.5f32.ln();
-        }
-    }
-    // 2. drop non-speech, then overlapped frames when a speaker has enough clean frames
-    let mut pos_count = vec![0usize; n_spk_us];
-    for i in 0..n {
-        for k in 0..n_spk_us {
-            if p[i * n_spk_us + k] > 0.5 && scores[i * n_spk_us + k] > 0.0 {
-                pos_count[k] += 1;
-            }
-        }
-    }
-    for i in 0..n {
-        for k in 0..n_spk_us {
-            let speech = p[i * n_spk_us + k] > 0.5;
-            let idx = i * n_spk_us + k;
-            if !speech {
-                scores[idx] = f32::NEG_INFINITY;
-            } else if scores[idx] <= 0.0 && pos_count[k] >= min_pos {
-                scores[idx] = f32::NEG_INFINITY;
-            }
-        }
-    }
-    // 3. boost the newest frames
-    if boost_latest > 0.0 && n > cache_len {
-        for i in cache_len..n {
-            for k in 0..n_spk_us {
-                scores[i * n_spk_us + k] += boost_latest;
-            }
-        }
-    }
-    // 4/5. strong then weak top-k boost per speaker
-    for (k, n_boost) in [(0usize, strong), (1usize, weak)] {
-        if n_boost == 0 {
-            continue;
-        }
-        let scale = if k == 0 { 2.0f32 } else { 1.0 };
-        let boost_val = -scale * 0.5f32.ln();
-        for spk in 0..n_spk_us {
-            let mut order: Vec<usize> = (0..n).collect();
-            order.sort_by(|a, b| {
-                scores[*b * n_spk_us + spk]
-                    .partial_cmp(&scores[*a * n_spk_us + spk])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            for &i in order.iter().take(n_boost) {
-                let idx = i * n_spk_us + spk;
-                if scores[idx] > f32::NEG_INFINITY {
-                    scores[idx] += boost_val;
-                }
-            }
-        }
-    }
-    // 6. append silence padding with +inf
-    let n_total = n + sil_per_spk;
-    let mut padded = vec![f32::NEG_INFINITY; n_total * n_spk_us];
-    padded[..n * n_spk_us].copy_from_slice(&scores);
-    for j in 0..sil_per_spk {
-        for k in 0..n_spk_us {
-            padded[(n + j) * n_spk_us + k] = f32::INFINITY;
-        }
-    }
-    // 7. top-k over the flattened (speaker, frame) space
-    let mut flat: Vec<(usize, f32)> = (0..n_total * n_spk_us)
-        .map(|i| (i, padded[i]))
-        .collect();
-    flat.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let k = cache_len.min(flat.len());
-    let max_index = 99_999usize;
-    let mut indices: Vec<usize> = flat[..k]
-        .iter()
-        .map(|(i, v)| if *v > f32::NEG_INFINITY { *i % n_total } else { max_index })
-        .collect();
-    indices.sort_unstable();
-    let mut is_disabled: Vec<bool> = indices.iter().map(|i| *i == max_index || *i >= n).collect();
-    for (idx, d) in indices.iter_mut().zip(is_disabled.iter()) {
-        if *d {
-            *idx = 0;
-        }
-    }
-    // 8. gather embeddings/preds, replacing disabled slots with the silence embedding
-    let mut out_e = vec![0f32; k * emb_dim as usize];
-    let mut out_p = vec![0f32; k * n_spk_us];
-    for (slot, i) in indices.iter().enumerate() {
-        if is_disabled[slot] {
-            out_e[slot * emb_dim as usize..(slot + 1) * emb_dim as usize]
-                .copy_from_slice(&sil[..emb_dim as usize]);
-        } else {
-            out_e[slot * emb_dim as usize..(slot + 1) * emb_dim as usize]
-                .copy_from_slice(&e[i * emb_dim as usize..(i + 1) * emb_dim as usize]);
-            out_p[slot * n_spk_us..(slot + 1) * n_spk_us]
-                .copy_from_slice(&p[i * n_spk_us..(i + 1) * n_spk_us]);
-        }
-    }
-    Ok((
-        Array::from_slice(&out_e, &[1, k as i32, emb_dim]),
-        Array::from_slice(&out_p, &[1, k as i32, n_spk]),
-    ))
 }

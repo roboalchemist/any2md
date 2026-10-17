@@ -69,14 +69,56 @@ remembering:
   and segment times need the window start offset;
 - the checkpoint's own `preprocessor.fb/window` are used, and the mel is
   globally indexed (frames `start..start+count`, zeroed past `total//hop`).
-DER vs Python: 0.32% on the 44 s two-speaker clip (8/8 segments, 2/2 speakers),
-10.5% on the 90 s interview where the only material difference is the final
-speaker label (81.6-90 s) -- miss/FA stay below 0.5%.
+AOSC bug found when porting the second model: upstream flattens scores
+**speaker-major** (`transpose(scores, [0, 2, 1]).reshape(b, -1)`) before the
+global top-k, so a flat index maps back to a frame with `% n_frames`. My first
+implementation enumerated a frame-major buffer and did the same modulo, which
+selected effectively arbitrary frames. Fixing it took Nemotron from 10.5% to
+**0.16%** DER on the 90 s interview. The compressor now lives in
+`any2md-models/src/aosc.rs` and is shared by both diarizers.
 
-Remaining: the Sortformer streaming path (any2md drives it through chunked
-`generate_stream` + cross-chunk merge), packaging/release docs, merge to `main`.
+Sortformer (`sortformer.rs`) ports the path any2md actually drives:
+`generate_stream(<10 s WAV chunks>)` -> `feed()` per chunk -> 0.3 s same-speaker
+merge. Details:
+- dw-striding Conv2d subsampling (checkpoint weights already in MLX layout:
+  `[O,H,W,I]`, depthwise `[C,K,1]`), 17 FastConformer layers (separate
+  q/k/v projections, learned `bias_u`/`bias_v`, shared `relative_k_proj`,
+  rel-shift, GLU conv module with BatchNorm running stats), `scale_input`
+  (x * sqrt(512)), then `encoder_proj` 512->192 and 18 post-LN Transformer
+  layers with learned positions, then ReLU -> 192 -> 4 -> sigmoid.
+- the checkpoint is **fp16**, and upstream casts the mel to the model dtype
+  before the encoder; the port does the same (f16 weights + f16 activations).
+- v2.1 streaming front-end uses **no** per-feature normalisation and no
+  `pad_to`; per-chunk mel (not global), unlike Nemotron.
+- state: `spkcache`/`fifo` hold pre-encoded embeddings; every step re-attends
+  `[spkcache, fifo, left_ctx(1), chunk]` and *replaces* the cached predictions
+  with the refreshed values; FIFO overflow moves into the cache and AOSC
+  compresses with the running silence profile (`sil_threshold` 0.2,
+  3 silence frames per speaker, 188-frame cache, 188-frame update period).
 
-Gates: `make rust-parity` → mel, LID, STT (WER) and ReaderLM parity.
+DER vs Python: Sortformer 0.00% (44 s, 8/8 segments byte-identical) and 0.47%
+(90 s, 19/19); Nemotron 0.03% and 0.16% (21/21).
+
+Long audio (82-min podcast): Sortformer 22.9 s / 1.39 GB peak, Nemotron
+6.8 s / 1.21 GB -- versus the Python reference 4.64 GB / ~61 s. Windowed
+(30 s) DER vs Python is 5.54% and 2.78%, speech/non-speech disagreement 3.05%
+and 1.35%, speaker counts 4/4 and 5/6 (within one).
+
+Exact segment parity is **not** attainable over an hour of streaming, and the
+reason is worth recording: I dumped per-chunk speaker probabilities from both
+sides on a 3-minute slice. Chunks 0-5 agree to `max|Δ| ≤ 1e-3`; chunk 6 jumps to
+0.46 and chunk 8 to 0.98. The diarizer feeds its own predictions back into the
+speaker cache, so once a frame sits near the 0.5 threshold a f16-level mel
+difference (~2e-6) can flip a speaker identity, the cache then encodes the
+flipped identity, and the trajectories separate. Rounding my AOSC scoring
+through f16 to mirror MLX's fp16 arithmetic made agreement slightly *worse*
+(51.7% vs 55.1% of segments), which rules out score quantization as the cause.
+The gate therefore checks what is meaningful on long audio: same speaker count
+(±1), 30 s-window DER, speech/non-speech agreement, and wall time.
+
+Gates: `make rust-parity` → mel, LID, STT (WER), ASR, diarization DER (both
+models, speaker-count equality), ReaderLM markdown. `make rust-parity-long`
+adds the 82-minute bounded-memory/time check.
 
 ## 2026-10-16 — ANY2-36: dep upgrades, memory fixes, model upgrades (v0.4.0)
 

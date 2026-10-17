@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-slow test-all lint format install rust-build rust-test rust-parity
+.PHONY: test test-unit test-integration test-slow test-all lint format install rust-build rust-test rust-parity rust-parity-long rust-install
 
 test:
 	python -m pytest tests/ -x -q --ignore=tests/test_inference.py --ignore=tests/test_integration.py
@@ -30,6 +30,10 @@ rust-build:
 rust-test:
 	cd rust && cargo test --release
 
+# Install the native binary next to the Python CLI
+rust-install: rust-build
+	install -m 0755 rust/target/release/any2md-rs $${PREFIX:-/usr/local}/bin/any2md-rs
+
 # Native vs Python parity gates (see rust/parity/parity.py)
 rust-parity: rust-build
 	.venv/bin/python rust/parity/parity.py mel --input tests/audio/yt_interview.wav --kind whisper
@@ -43,3 +47,7 @@ rust-parity: rust-build
 	rust/target/release/any2md-rs html tests/fixtures/sample.html -o /tmp/any2md-parity-rust \
 		--max-tokens 64 --stats-json /tmp/any2md-parity-rust.json
 	.venv/bin/python rust/parity/parity.py compare /tmp/any2md-parity-py.json /tmp/any2md-parity-rust.json
+
+# Long-audio gate (82-min podcast): bounded memory/time + permutation-invariant DER
+rust-parity-long: rust-build
+	.venv/bin/python rust/parity/parity.py diarize-long --stats
