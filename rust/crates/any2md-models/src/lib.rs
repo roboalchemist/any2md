@@ -4,6 +4,7 @@
 //! Whisper LID follow as the port progresses.
 
 pub mod chunk;
+pub mod diarize;
 pub mod parakeet;
 pub mod qwen3asr;
 pub mod qwen2;

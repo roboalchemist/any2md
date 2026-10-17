@@ -26,8 +26,31 @@ Traps found while porting (worth remembering):
 - mlx-rs `try_index(range)` indexes **axis 0**; per-axis slicing needs
   `take_axis` with explicit index arrays (a silent empty mask otherwise).
 
-Remaining: Qwen3-ASR (audio tower + Qwen3 decoder), Sortformer + Nemotron-3
-diarization with a DER gate, packaging/release docs, merge to `main`.
+Qwen3-ASR (done after the first pass): audio tower with per-100-frame conv
+windows + block-attention mask, Qwen3 decoder with per-head q/k RMSNorm; the
+MLX 4-bit conversion has no `tokenizer.json`, so `Qwen/Qwen3-ASR-1.7B-hf` is used
+after verifying id-for-id equality. Token-identical on zh_short (12/12) and
+zh_two_speakers (24/24).
+
+Diarization notes for the next pass (Nemotron-3 default):
+- weights: `encoder.pre_encode` is a plain linear (128*8 -> 512, bias-free),
+  `embed_norm`/`final_norm`, 31 transformer blocks (w_qkv fused, RoPE on
+  head_dim 64, gelu FFN), then `sortformer_modules`: encoder_proj 512->192,
+  subpixel_upsample Conv1d(192->1536, k3, pad1) reshaping time by x8,
+  first_hidden_to_hidden -> single_hidden_to_spks -> sigmoid; 8 speakers.
+  `learnable_sil_emb` is 512-d (encoder space).
+- the checkpoint ships its own mel front-end buffers
+  (`preprocessor.fb` [1,128,257], `preprocessor.window` [400]) — use those
+  instead of the generated asset for exactness.
+- `generate()` streams 27.2 s windows (chunk_len 340 * factor 8 * hop 160),
+  `feed()` internally slides 2720-frame central windows with 320-frame right
+  context; AOSC compression (spkcache 264, fifo 40) kicks in after the first
+  window. Segment conversion + stream merging are now ported and unit-tested
+  (`any2md-models/src/diarize.rs`, vectors from
+  `rust/parity/diarize_segments.py`).
+
+Remaining: Nemotron-3 streaming port (encoder/head/AOSC), Sortformer streaming
+path, DER gate, packaging/release docs, merge to `main`.
 
 Gates: `make rust-parity` → mel, LID, STT (WER) and ReaderLM parity.
 
