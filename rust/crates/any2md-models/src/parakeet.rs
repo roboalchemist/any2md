@@ -539,6 +539,18 @@ impl Parakeet {
         })
     }
 
+    /// NeMo mel parameters derived from the checkpoint's preprocessor config.
+    pub fn nemo_mel_config(&self) -> any2md_audio::NemoMel {
+        let cfg = &self.config.preprocessor;
+        let mut nemo = any2md_audio::NemoMel::parakeet();
+        nemo.n_fft = cfg.n_fft;
+        nemo.n_mels = cfg.features;
+        nemo.win_length = (cfg.window_size * cfg.sample_rate as f32) as usize;
+        nemo.hop = (cfg.window_stride * cfg.sample_rate as f32) as usize;
+        nemo.pad_to = cfg.pad_to.max(1);
+        nemo
+    }
+
     /// Encode log-mel `[T, n_mels]` into `[T', d_model]`.
     pub fn encode(&self, mel: &Array) -> Result<Array> {
         let (mut h, t) = self.subsampling.forward(mel)?;
@@ -560,6 +572,15 @@ impl Parakeet {
 
     /// Greedy TDT decode of one encoded utterance.
     pub fn decode(&self, mel: &Array) -> Result<Vec<AlignedToken>> {
+        self.decode_traced(mel, None)
+    }
+
+    /// Same as [`decode`], optionally recording every step (time, pred, duration).
+    pub fn decode_traced(
+        &self,
+        mel: &Array,
+        mut trace: Option<&mut Vec<(i32, u32, i32)>>,
+    ) -> Result<Vec<AlignedToken>> {
         let features = self.encode(mel)?;
         let blank = self.config.blank_id();
         let frame_secs = self.config.encoder.subsampling_factor as f32 / SAMPLE_RATE * 160.0;
@@ -613,6 +634,10 @@ impl Parakeet {
                         duration: duration as f32 * frame_secs,
                     });
                 }
+            }
+
+            if let Some(t) = trace.as_deref_mut() {
+                t.push((time, pred_id as u32, duration));
             }
 
             time += duration;
@@ -672,14 +697,28 @@ fn relative_positional(d_model: usize, max_len: usize) -> Result<Array> {
 /// Load a 16 kHz WAV and compute the model's own log-mel (NeMo params).
 pub fn mel_for(path: &Path, cfg: &PreprocessorConfig) -> Result<Array> {
     let audio = any2md_audio::read_wav_16k(path)?;
+    mel_from_audio(&audio, cfg, true)
+}
+
+/// NeMo log-mel for a waveform, time-major `[frames, mels]` as the encoder wants.
+///
+/// `bf16_audio` reproduces any2md's `generate()` default: the waveform is cast
+/// to bfloat16 before the STFT (MLX promotes back for the mel matmul with f32
+/// filters). That quantisation flips a few borderline joint decisions, so the
+/// flag matters for exact parity with the Python CLI, not for correctness.
+pub fn mel_from_audio(audio: &Array, cfg: &PreprocessorConfig, bf16_audio: bool) -> Result<Array> {
+    let audio = if bf16_audio {
+        &audio.as_dtype(Dtype::Bfloat16)?.as_dtype(Dtype::Float32)?
+    } else {
+        audio
+    };
     let mut nemo = any2md_audio::NemoMel::parakeet();
     nemo.n_fft = cfg.n_fft;
     nemo.n_mels = cfg.features;
     nemo.win_length = (cfg.window_size * cfg.sample_rate as f32) as usize;
     nemo.hop = (cfg.window_stride * cfg.sample_rate as f32) as usize;
     nemo.pad_to = cfg.pad_to.max(1);
-    let mel = any2md_audio::nemo_mel(&audio, &nemo)?;
-    // NeMo returns [mels, frames]; the encoder wants [frames, mels]
+    let mel = any2md_audio::nemo_mel(audio, &nemo)?;
     Ok(mel.transpose_axes(&[1, 0])?)
 }
 

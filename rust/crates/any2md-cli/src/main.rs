@@ -54,6 +54,18 @@ enum Command {
         /// Emit token ids as JSON (parity checks)
         #[arg(long)]
         tokens_json: Option<PathBuf>,
+        /// Write raw encoder features (f32, shape header) for parity debugging
+        #[arg(long)]
+        features_out: Option<PathBuf>,
+        /// Write the per-step decode trace (time, pred, duration) as JSON
+        #[arg(long)]
+        trace_json: Option<PathBuf>,
+        /// Chunk length in seconds (0 disables chunking; default 30 like any2md)
+        #[arg(short = 'c', long, default_value_t = 30.0)]
+        chunk_duration: f32,
+        /// Audio precision before the STFT: bf16 matches any2md's generate() default
+        #[arg(long, default_value = "bf16")]
+        dtype: String,
     },
     /// Detect spoken language with Whisper (mirrors --language auto)
     Lid {
@@ -113,9 +125,27 @@ fn main() -> Result<()> {
 
     any2md_mlx::init()?;
     match cli.command {
-        Command::Stt { input, model, stats, out, tokens_json } => {
-            transcribe(&input, &model, stats, out.as_deref(), tokens_json.as_deref())
-        }
+        Command::Stt {
+            input,
+            model,
+            stats,
+            out,
+            tokens_json,
+            features_out,
+            trace_json,
+            chunk_duration,
+            dtype,
+        } => transcribe(
+            &input,
+            &model,
+            stats,
+            out.as_deref(),
+            tokens_json.as_deref(),
+            features_out.as_deref(),
+            trace_json.as_deref(),
+            chunk_duration,
+            &dtype,
+        ),
         Command::Lid { input, model, stats } => detect_language(&input, &model, stats),
         Command::Mel { input, kind, out } => dump_mel(&input, &kind, &out),
         Command::Html {
@@ -318,17 +348,51 @@ fn transcribe(
     stats: bool,
     out: Option<&Path>,
     tokens_json: Option<&Path>,
+    features_out: Option<&Path>,
+    trace_json: Option<&Path>,
+    chunk_duration: f32,
+    dtype: &str,
 ) -> Result<()> {
+    let bf16_audio = match dtype {
+        "bf16" | "bfloat16" => true,
+        "f32" | "float32" => false,
+        other => anyhow::bail!("unknown dtype {other:?} (bf16|f32)"),
+    };
     let cfg_path = any2md_hub::get_file(model_id, "config.json")?;
     let config = any2md_models::ParakeetConfig::from_json(&std::fs::read_to_string(&cfg_path)?)?;
     let dir = cfg_path.parent().context("config has no parent dir")?;
 
     let started = std::time::Instant::now();
-    let mel = any2md_models::parakeet::mel_for(input, &config.preprocessor)?;
+    let audio = any2md_audio::read_wav_16k(input)?;
+    let mel =
+        any2md_models::parakeet::mel_from_audio(&audio, &config.preprocessor, bf16_audio)?;
     let mel_secs = started.elapsed().as_secs_f64();
 
     let model = any2md_models::Parakeet::load(dir, config)?;
-    let tokens = model.decode(&mel)?;
+
+    if let Some(path) = features_out {
+        let feats = model.encode(&mel)?;
+        feats.eval()?;
+        write_f32_tensor(path, &feats)?;
+        eprintln!("features {:?} -> {}", feats.shape(), path.display());
+    }
+
+    let tokens = if chunk_duration > 0.0 {
+        any2md_models::chunk::transcribe_chunked_dtype(
+            &model,
+            &audio,
+            chunk_duration,
+            any2md_models::chunk::DEFAULT_OVERLAP_SECONDS,
+            bf16_audio,
+        )?
+    } else {
+        let mut trace = Vec::new();
+        let tokens = model.decode_traced(&mel, trace_json.map(|_| &mut trace))?;
+        if let Some(path) = trace_json {
+            std::fs::write(path, serde_json::to_vec(&trace)?)?;
+        }
+        tokens
+    };
     let text: String = tokens.iter().map(|t| t.text.as_str()).collect();
     let text = text.trim().to_string();
 
@@ -363,5 +427,22 @@ fn transcribe(
         }
         None => println!("{text}"),
     }
+    Ok(())
+}
+
+/// Write a `[dims] + f32le` tensor blob (same format the mel dump uses).
+fn write_f32_tensor(path: &Path, array: &any2md_mlx::Array) -> Result<()> {
+    array.eval()?;
+    let shape = array.shape().to_vec();
+    let data = array.as_slice::<f32>();
+    let mut buf = Vec::with_capacity(8 + data.len() * 4);
+    buf.extend_from_slice(&(shape.len() as u32).to_le_bytes());
+    for d in &shape {
+        buf.extend_from_slice(&(*d as u32).to_le_bytes());
+    }
+    for v in data {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(path, &buf)?;
     Ok(())
 }
