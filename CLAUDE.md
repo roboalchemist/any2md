@@ -4,7 +4,7 @@
 
 A toolkit for converting any media, document, or data format to markdown with YAML frontmatter. AI inference runs locally on Apple Silicon via MLX. No cloud APIs. 20 converters, 8 zero-dependency (stdlib only).
 
-**Version**: 0.4.0 | **Package**: `any2md` | **Entry point**: `any2md.cli:app`
+**Version**: 0.5.0 | **Package**: `any2md` | **Entry point**: `any2md.cli:app`
 
 ## Project Structure
 
@@ -55,6 +55,31 @@ any2md/
 ```
 
 **Total**: ~10,000 lines of source code across 20 modules plus memory-profiling and model-download scripts.
+
+## Language routing & LID
+
+`_resolve_language_and_model()` picks the ASR model:
+
+1. explicit `--language` → route by membership in `PARAKEET_LANGS`
+2. YouTube metadata language, else Whisper-tiny LID
+3. `PARAKEET_LANGS` covers Parakeet v3's 25 European languages → Parakeet
+4. anything else, **including an undecided LID**, → Qwen3-ASR (self-detects)
+
+Invariants worth keeping:
+
+- `_detect_language()` returns `UNDETERMINED_LANGUAGE` (`"und"`) — not `"en"` —
+  when the clip is too short (<5 s), confidence is below 0.5, the model is
+  missing, or anything throws. The router maps that to Qwen3-ASR and returns
+  `language=None` so the model auto-detects. Guessing English is unsafe:
+  whisper-tiny calls 2 s of Mandarin `en` at 0.63 confidence, and Parakeet
+  cannot transcribe non-European audio at all.
+- LID needs ≥5 s to be reliable; below ~3 s it is close to useless (Hindi at
+  3 s comes back `en` at 0.25). Short clips therefore take the multilingual path.
+- `_audio_duration_s` / `_extract_lid_window` must not assume integer PCM:
+  float32 WAVs break stdlib `wave`, and the fallback is ffprobe/ffmpeg. A
+  failure here used to look like "0 s audio", silently skipping LID.
+- Model choice is evidence-based; `scripts/eval_language_routing.py` reproduces
+  the MLS/FLEURS comparison (WER/CER, speed, MLX peak, routing accuracy).
 
 ## Native Rust port (`rust/`)
 
@@ -334,4 +359,4 @@ any2md completion fish      # Output fish completion script
 
 ## Project History
 
-Originally `yt2srt` on `lightning-whisper-mlx`. Migrated to `yt2md` on `mlx-audio` with Parakeet, rewritten from argparse to typer. Then expanded from 2 tools (yt2md + pdf2md) to 20 converters as a proper Python package (`src/any2md/`) with unified CLI, optional dependency groups, and 808 tests. v0.2.0 added quality & polish pass; v0.2.3 added `repo` subcommand via repomix; v0.3.0 added `speaker` catalog, `docs`/`completion` subcommands, `--silent` flag, and `--identify`/`--auto-enroll`/`--no-enroll` flags on `yt`; v0.3.4 added Qwen3-ASR-1.7B multilingual STT + Whisper-tiny LID auto-routing + `--language` / `--aligner-model` flags (ANY2-28 series). v0.4.0 (ANY2-36) upgraded all dependencies to latest (mlx 0.32, mlx-audio 0.5.9, mlx-vlm 0.7.8, mlx-lm 0.32, transformers 5.20), fixed the memory issues behind intermittent leaks (MLX cache cap + stage-wise model release + bounded diarization/alignment/LID), switched diarization to Nemotron-3-Diarization, and added Qwen3.6/Qwen3.8 OCR aliases.
+Originally `yt2srt` on `lightning-whisper-mlx`. Migrated to `yt2md` on `mlx-audio` with Parakeet, rewritten from argparse to typer. Then expanded from 2 tools (yt2md + pdf2md) to 20 converters as a proper Python package (`src/any2md/`) with unified CLI, optional dependency groups, and 808 tests. v0.2.0 added quality & polish pass; v0.2.3 added `repo` subcommand via repomix; v0.3.0 added `speaker` catalog, `docs`/`completion` subcommands, `--silent` flag, and `--identify`/`--auto-enroll`/`--no-enroll` flags on `yt`; v0.3.4 added Qwen3-ASR-1.7B multilingual STT + Whisper-tiny LID auto-routing + `--language` / `--aligner-model` flags (ANY2-28 series). v0.5.0 (ANY2-38) widened auto-routing to Parakeet v3's 25 European languages, added the Qwen3-ASR-0.6B alias, and hardened LID (float-WAV decoding, undetermined→multilingual, short-clip fallback). v0.4.0 (ANY2-36) upgraded all dependencies to latest (mlx 0.32, mlx-audio 0.5.9, mlx-vlm 0.7.8, mlx-lm 0.32, transformers 5.20), fixed the memory issues behind intermittent leaks (MLX cache cap + stage-wise model release + bounded diarization/alignment/LID), switched diarization to Nemotron-3-Diarization, and added Qwen3.6/Qwen3.8 OCR aliases.

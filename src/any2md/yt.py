@@ -66,6 +66,13 @@ MODEL_ALIASES = {
     "parakeet-1.1b": "mlx-community/parakeet-tdt-1.1b",
     "parakeet-ctc": "mlx-community/parakeet-ctc-0.6b",
     "qwen3-asr": "mlx-community/Qwen3-ASR-1.7B-bf16",
+    # Half-size multilingual option. Measured worse than 1.7B on MLS
+    # (es/fr/de/it/pt/nl/pl) and on FLEURS (zh/ja/ko/ar/hi/ru), so it is not the
+    # default; useful when resident memory matters more than a point of WER.
+    "qwen3-asr-0.6b": "mlx-community/Qwen3-ASR-0.6B-4bit",
+    "qwen3-asr-0.6b-4bit": "mlx-community/Qwen3-ASR-0.6B-4bit",
+    "qwen3-asr-0.6b-8bit": "mlx-community/Qwen3-ASR-0.6B-8bit",
+    "qwen3-asr-0.6b-bf16": "mlx-community/Qwen3-ASR-0.6B-bf16",
     "qwen3-asr-bf16": "mlx-community/Qwen3-ASR-1.7B-bf16",
     "qwen3-asr-8bit": "mlx-community/Qwen3-ASR-1.7B-8bit",
     "qwen3-asr-4bit": "mlx-community/Qwen3-ASR-1.7B-4bit",
@@ -79,6 +86,9 @@ SUPPORTED_MODELS = [
     "mlx-community/Qwen3-ASR-1.7B-bf16",
     "mlx-community/Qwen3-ASR-1.7B-8bit",
     "mlx-community/Qwen3-ASR-1.7B-4bit",
+    "mlx-community/Qwen3-ASR-0.6B-bf16",
+    "mlx-community/Qwen3-ASR-0.6B-8bit",
+    "mlx-community/Qwen3-ASR-0.6B-4bit",
 ] + list(MODEL_ALIASES.keys())
 
 # ---------------------------------------------------------------------------
@@ -338,22 +348,84 @@ LID_MIN_AUDIO_DURATION_S = 5.0        # skip LID below this; default to Parakeet
 LID_SAMPLE_WINDOW_S = 30.0            # Whisper's native window (universal in production)
 LID_CONFIDENCE_THRESHOLD = 0.5        # from faster-whisper's production default
 LID_MAJORITY_VOTE_SEGMENTS = 3        # max segments for majority-vote (future use)
-PARAKEET_LANGS = {"en", "english", "eng"}  # ISO 639-1, full name, ISO 639-2
+# Languages NVIDIA Parakeet TDT 0.6B v3 transcribes (25 European languages).
+# Routing these to Parakeet keeps the fast 0.6B transducer instead of the
+# LLM-based multilingual model: on MLS read speech (6 clips/language) Parakeet
+# beat Qwen3-ASR-0.6B on all seven languages measured (mean WER 7.4% vs 16.9%)
+# and edged out 1.7B overall (8.8%), while running several times faster.
+# Entries cover ISO 639-1 codes, English names and ISO 639-2 aliases so
+# --language values work in any form.
+PARAKEET_LANGS = {
+    "en", "english", "eng",
+    "es", "spanish", "spa",
+    "fr", "french", "fra", "fre",
+    "de", "german", "deu", "ger",
+    "bg", "bulgarian", "bul",
+    "hr", "croatian", "hrv",
+    "cs", "czech", "ces", "cze",
+    "da", "danish", "dan",
+    "nl", "dutch", "nld", "dut",
+    "et", "estonian", "est",
+    "fi", "finnish", "fin",
+    "el", "greek", "ell", "gre",
+    "hu", "hungarian", "hun",
+    "it", "italian", "ita",
+    "lv", "latvian", "lav",
+    "lt", "lithuanian", "lit",
+    "mt", "maltese", "mlt",
+    "pl", "polish", "pol",
+    "pt", "portuguese", "por",
+    "ro", "romanian", "ron", "rum",
+    "sk", "slovak", "slk", "slo",
+    "sl", "slovenian", "slv",
+    "sv", "swedish", "swe",
+    "ru", "russian", "rus",
+    "uk", "ukrainian", "ukr",
+}
 # whisper-tiny-asr-* repackages the same whisper-tiny weights as the old
 # whisper-tiny-mlx port but ships preprocessor_config.json/tokenizer.json, so
 # no openai/whisper-tiny processor fallback is needed.
 DEFAULT_LID_MODEL = "mlx-community/whisper-tiny-asr-fp16"
 
+# Sentinel for "LID could not decide" (too short, low confidence, model
+# unavailable). Routing sends these to the multilingual model: it self-detects
+# and can read every language, whereas Parakeet only covers 25 European ones --
+# and a short-clip misroute to Parakeet produces pure garbage (whisper-tiny
+# labels 2 s of Mandarin as English at 0.63 confidence, for example).
+UNDETERMINED_LANGUAGE = "und"
+MULTILINGUAL_MODEL = "qwen3-asr"
+
 _lid_model_cache = None  # module-level singleton
 
 
 def _audio_duration_s(wav_path: str) -> float:
-    """Return duration of a WAV file in seconds using stdlib wave."""
+    """Return duration of a WAV file in seconds.
+
+    stdlib ``wave`` only understands integer PCM; float32 WAVs (ffmpeg
+    ``-c:a pcm_f32le``, Audacity, many recorders) raise "unknown format". That
+    used to look like a zero-length file, which silently skipped LID and routed
+    non-English audio to the English model. Fall back to ffprobe.
+    """
     import wave as _wave
     try:
         with _wave.open(wav_path, "rb") as w:
             return w.getnframes() / w.getframerate()
     except Exception:
+        pass
+    try:
+        import subprocess
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=nw=1:nk=1",
+                wav_path,
+            ],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.strip()
+        return float(out)
+    except Exception as exc:
+        logger.warning("Could not determine duration of %s (%s) — LID may be skipped", wav_path, exc)
         return 0.0
 
 
@@ -378,7 +450,23 @@ def _extract_lid_window(wav_path: str, seconds: float) -> str:
                 dst.writeframes(src.readframes(frames))
         return tmp_path
     except Exception:
-        return wav_path
+        # stdlib wave cannot decode float/compressed WAVs; let ffmpeg slice and
+        # downmix the window instead.
+        try:
+            import subprocess
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp_path = tmp.name
+            subprocess.run(
+                [
+                    "ffmpeg", "-v", "error", "-y", "-t", f"{seconds:.3f}",
+                    "-i", wav_path, "-ar", "16000", "-ac", "1", tmp_path,
+                ],
+                capture_output=True, timeout=120, check=True,
+            )
+            return tmp_path
+        except Exception:
+            return wav_path
 
 
 def _load_lid_model(model_name: str = DEFAULT_LID_MODEL):
@@ -421,24 +509,27 @@ def _detect_language(wav_path: str) -> tuple:
     Returns (lang_code, confidence) where lang_code is a two-letter ISO 639-1
     code (e.g. 'en', 'zh') and confidence is in [0.0, 1.0].
 
-    Defaults to ('en', 0.0) on any error, short clip, or silent/empty audio.
-    Whisper internally pads audio to 30s — LID_SAMPLE_WINDOW_S is the window.
+    Returns (UNDETERMINED_LANGUAGE, conf) when it cannot decide: short clip,
+    low confidence, silent audio, or any error. Callers route those to the
+    multilingual model rather than guessing English, because whisper-tiny is
+    unreliable below ~3 s (2 s of Mandarin scores "en" at 0.63) and a wrong
+    guess towards Parakeet produces garbage.
 
-    v1: low-confidence → Parakeet (en) as safe fallback.
+    Whisper internally pads audio to 30s — LID_SAMPLE_WINDOW_S is the window.
     Majority-vote across multiple 30s windows is documented as future work.
     """
     try:
         duration = _audio_duration_s(wav_path)
         if duration < LID_MIN_AUDIO_DURATION_S:
             logger.info(
-                "Audio %.1fs < %.1fs minimum — skipping LID, defaulting to Parakeet (en)",
+                "Audio %.1fs < %.1fs minimum — skipping LID, using the multilingual model",
                 duration, LID_MIN_AUDIO_DURATION_S,
             )
-            return "en", 0.0
+            return UNDETERMINED_LANGUAGE, 0.0
 
         model = _load_lid_model()
         if model is None:
-            return "en", 0.0
+            return UNDETERMINED_LANGUAGE, 0.0
 
         # Prepare mel spectrogram from the WAV path (uses model._prepare_audio internally)
         try:
@@ -449,9 +540,21 @@ def _detect_language(wav_path: str) -> tuple:
                 from mlx_audio.stt.models.whisper.audio import pad_or_trim
             except ImportError:
                 logger.warning("Cannot import Whisper audio utils — LID disabled")
-                return "en", 0.0
+                return UNDETERMINED_LANGUAGE, 0.0
 
-        mel, _content_frames = model._prepare_audio(_extract_lid_window(wav_path, LID_SAMPLE_WINDOW_S + 1.0))
+        window = _extract_lid_window(wav_path, LID_SAMPLE_WINDOW_S + 1.0)
+        try:
+            mel, _content_frames = model._prepare_audio(window)
+        finally:
+            # _extract_lid_window writes a temp slice; only the slice is ours to
+            # delete (on failure it hands back the caller's path).
+            import os as _os
+            import tempfile as _tempfile
+            if window != wav_path and _os.path.dirname(window) == _tempfile.gettempdir():
+                try:
+                    _os.unlink(window)
+                except OSError:
+                    pass
         # Trim/pad to a single 30s window (Whisper's native LID window)
         mel_segment = pad_or_trim(mel, N_FRAMES, axis=-2).astype(model.dtype)
 
@@ -463,8 +566,8 @@ def _detect_language(wav_path: str) -> tuple:
 
         # probs is a dict mapping language codes (e.g. "en", "zh") to float probabilities
         if not isinstance(probs, dict) or not probs:
-            logger.warning("Unexpected LID result shape: %r — defaulting to Parakeet", type(probs))
-            return "en", 0.0
+            logger.warning("Unexpected LID result shape: %r — using the multilingual model", type(probs))
+            return UNDETERMINED_LANGUAGE, 0.0
 
         top_lang = max(probs, key=probs.get)
         top_prob = probs[top_lang]
@@ -473,16 +576,17 @@ def _detect_language(wav_path: str) -> tuple:
             logger.info("Detected language: %s (conf=%.2f)", top_lang, top_prob)
             return top_lang, top_prob
 
-        # Low confidence — fall back to Parakeet (en)
+        # Low confidence — the multilingual model self-detects and can read any
+        # language, so it is the safe side of this bet.
         logger.warning(
-            "LID confidence %.2f below threshold %.2f — defaulting to Parakeet (en)",
+            "LID confidence %.2f below threshold %.2f — using the multilingual model",
             top_prob, LID_CONFIDENCE_THRESHOLD,
         )
-        return "en", top_prob
+        return UNDETERMINED_LANGUAGE, top_prob
 
     except Exception as e:
-        logger.warning("LID error: %s — defaulting to Parakeet (en)", e)
-        return "en", 0.0
+        logger.warning("LID error: %s — using the multilingual model", e)
+        return UNDETERMINED_LANGUAGE, 0.0
 
 
 def _resolve_language_and_model(
@@ -500,8 +604,8 @@ def _resolve_language_and_model(
 
     Then:
       - Explicit --model (non-None) wins unconditionally
-      - lang in PARAKEET_LANGS → DEFAULT_MODEL (Parakeet)
-      - otherwise → 'qwen3-asr' (bf16 alias from ANY2-30)
+      - lang in PARAKEET_LANGS → DEFAULT_MODEL (Parakeet, 25 European languages)
+      - otherwise (including an undecided LID) → Qwen3-ASR, which self-detects
 
     Note: model_flag=None means "user did not pass --model"; model_flag=DEFAULT_MODEL
     means the user explicitly passed --model parakeet-v3 (or the full ID). Using None
@@ -522,15 +626,16 @@ def _resolve_language_and_model(
     if model_flag is not None:
         # User explicitly specified --model — respect it unconditionally
         chosen_model = resolve_model(model_flag)
-    elif lang.lower() in PARAKEET_LANGS:
-        chosen_model = DEFAULT_MODEL  # Parakeet
+    elif lang != UNDETERMINED_LANGUAGE and lang.lower() in PARAKEET_LANGS:
+        chosen_model = DEFAULT_MODEL  # Parakeet (25 European languages)
     else:
-        chosen_model = "qwen3-asr"   # → bf16 alias from ANY2-30
+        chosen_model = MULTILINGUAL_MODEL
 
     if model_flag is None and chosen_model != DEFAULT_MODEL:
         logger.info("Auto-routing language '%s' → model %s", lang, chosen_model)
 
-    return lang, chosen_model
+    # "und" is not a language to pass to the model: leave it to auto-detect.
+    return (None if lang == UNDETERMINED_LANGUAGE else lang), chosen_model
 
 
 def extract_video_id(url_or_id: str) -> str:

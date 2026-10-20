@@ -1386,22 +1386,32 @@ class TestDetectLanguage(unittest.TestCase):
     to exercise the low-confidence and short-audio early-return paths.
     """
 
-    def test_short_audio_returns_en_with_zero_confidence(self):
-        """Audio shorter than LID_MIN_AUDIO_DURATION_S returns ('en', 0.0)."""
+    def test_short_audio_returns_undetermined(self):
+        """Audio shorter than the LID minimum returns the undetermined sentinel.
+
+        Short clips are where whisper-tiny is worst (2 s of Mandarin scores
+        "en" at 0.63), so guessing English would send them to a model that
+        cannot read them.
+        """
         from unittest.mock import patch
-        from any2md.yt import _detect_language, LID_MIN_AUDIO_DURATION_S
+        from any2md.yt import _detect_language, LID_MIN_AUDIO_DURATION_S, UNDETERMINED_LANGUAGE
 
         # Patch _audio_duration_s to return a value below the threshold
         with patch("any2md.yt._audio_duration_s", return_value=LID_MIN_AUDIO_DURATION_S - 0.1):
             lang, conf = _detect_language("x.wav")
 
-        self.assertEqual(lang, "en")
+        self.assertEqual(lang, UNDETERMINED_LANGUAGE)
         self.assertEqual(conf, 0.0)
 
-    def test_low_confidence_returns_en_with_raw_conf(self):
-        """When top prob < LID_CONFIDENCE_THRESHOLD, return ('en', raw_prob)."""
+    def test_low_confidence_returns_undetermined_with_raw_conf(self):
+        """When top prob < LID_CONFIDENCE_THRESHOLD, return ('und', raw_prob)."""
         from unittest.mock import patch, MagicMock
-        from any2md.yt import _detect_language, LID_MIN_AUDIO_DURATION_S, LID_CONFIDENCE_THRESHOLD
+        from any2md.yt import (
+            _detect_language,
+            LID_MIN_AUDIO_DURATION_S,
+            LID_CONFIDENCE_THRESHOLD,
+            UNDETERMINED_LANGUAGE,
+        )
 
         fake_mel = MagicMock()
         fake_mel.astype.return_value = fake_mel  # mel_segment.astype(dtype) returns itself
@@ -1424,7 +1434,7 @@ class TestDetectLanguage(unittest.TestCase):
              patch("mlx_audio.stt.models.whisper.audio.N_FRAMES", 3000):
             lang, conf = _detect_language("x.wav")
 
-        self.assertEqual(lang, "en")
+        self.assertEqual(lang, UNDETERMINED_LANGUAGE)
         self.assertAlmostEqual(conf, low_conf, places=5)
 
     def test_high_confidence_returns_detected_language(self):
@@ -1451,17 +1461,31 @@ class TestDetectLanguage(unittest.TestCase):
         self.assertEqual(lang, "zh")
         self.assertAlmostEqual(conf, high_conf, places=5)
 
-    def test_lid_model_none_returns_en(self):
-        """When _load_lid_model() returns None (model not installed), return ('en', 0.0)."""
+    def test_lid_model_none_returns_undetermined(self):
+        """When LID is unavailable, return undetermined so routing uses the
+        multilingual model (it can read English too)."""
         from unittest.mock import patch
-        from any2md.yt import _detect_language, LID_MIN_AUDIO_DURATION_S
+        from any2md.yt import _detect_language, LID_MIN_AUDIO_DURATION_S, UNDETERMINED_LANGUAGE
 
         with patch("any2md.yt._audio_duration_s", return_value=LID_MIN_AUDIO_DURATION_S + 1.0), \
              patch("any2md.yt._load_lid_model", return_value=None):
             lang, conf = _detect_language("x.wav")
 
-        self.assertEqual(lang, "en")
+        self.assertEqual(lang, UNDETERMINED_LANGUAGE)
         self.assertEqual(conf, 0.0)
+
+    def test_duration_falls_back_to_ffprobe(self):
+        """Float WAVs break stdlib wave; duration must come from ffprobe."""
+        import wave as _wave
+        from unittest.mock import patch, MagicMock
+        from any2md.yt import _audio_duration_s
+
+        fake = MagicMock()
+        fake.returncode = 0
+        fake.stdout = "12.5\n"
+        with patch.object(_wave, "open", side_effect=_wave.Error("unknown format: 3")), \
+             patch("subprocess.run", return_value=fake):
+            self.assertAlmostEqual(_audio_duration_s("float.wav"), 12.5)
 
 
 class TestLanguageDetectionAndRouting(unittest.TestCase):
@@ -1475,6 +1499,20 @@ class TestLanguageDetectionAndRouting(unittest.TestCase):
         lang, model = _resolve_language_and_model("x.wav", "zh", None, None)
         self.assertEqual(lang, "zh")
         self.assertIn("qwen3-asr", model)
+
+    def test_european_language_routes_to_parakeet(self):
+        """Parakeet v3 reads 25 European languages, not just English."""
+        for lang in ("fr", "german", "it", "pt", "pl", "ro", "greek", "uk"):
+            _lang, model = _resolve_language_and_model("x.wav", lang, None, None)
+            self.assertEqual(model, DEFAULT_MODEL, lang)
+
+    def test_undetermined_routes_to_multilingual_and_drops_language(self):
+        """An undecided LID must not be passed to the model as a language."""
+        from any2md.yt import UNDETERMINED_LANGUAGE
+
+        lang, model = _resolve_language_and_model("x.wav", UNDETERMINED_LANGUAGE, None, None)
+        self.assertIn("qwen3-asr", model)
+        self.assertIsNone(lang)
 
     def test_explicit_language_en_routes_to_parakeet(self):
         """Explicit --language en should route to Parakeet (English lang)."""
