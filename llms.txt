@@ -44,7 +44,7 @@ any2md yt <input>
   # Aliases: audio (MP3/WAV/FLAC/OGG/AAC/M4A), video (MP4/MKV/AVI/MOV/WebM)
   # Language auto-detected via Whisper-tiny LID; routes to Parakeet (English) or Qwen3-ASR (other).
   # Requires: mlx-audio[stt], yt-dlp (YouTube), ffmpeg
-  --model NAME             # English: parakeet-v3/v2/1.1b/ctc; Multilingual: qwen3-asr (alias of qwen3-asr-bf16), qwen3-asr-bf16/8bit/4bit
+  --model NAME             # European (25 langs): parakeet-v3/v2/1.1b/ctc; Multilingual: qwen3-asr (alias of qwen3-asr-bf16), qwen3-asr-bf16/8bit/4bit, qwen3-asr-0.6b(-4bit/8bit/bf16)
   --language LANG          # Language code or name (default: 'auto' — detect from audio). E.g. 'zh', 'Chinese', 'ja'.
   --diarize                # Enable speaker diarization (Nemotron-3-Diarization by default)
   --aligner-model NAME     # Forced-aligner for word timestamps (Qwen3-ASR + --diarize only)

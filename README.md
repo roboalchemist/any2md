@@ -187,17 +187,35 @@ python scripts/download_models.py --all       # Everything
 
 ## Multilingual transcription
 
-any2md supports 30+ languages via Qwen3-ASR-1.7B. By default, language is auto-detected from audio using a Whisper-tiny language identification model — no flag needed.
+any2md supports 30+ languages via Qwen3-ASR-1.7B. By default, language is
+auto-detected from audio using a Whisper-tiny language identification model — no
+flag needed.
+
+Auto-routing sends the 25 European languages Parakeet v3 reads (English, Spanish,
+French, German, Italian, Portuguese, Dutch, Polish, Czech, Greek, Romanian,
+Russian, Ukrainian, …) to Parakeet, and everything else to Qwen3-ASR. Measured on
+MLS read speech, Parakeet beat Qwen3-ASR-0.6B on all seven languages tested
+(mean WER 7.4% vs 16.9%) and edged out 1.7B overall (8.8%) while running ~4×
+faster. Re-run the comparison with
+`python scripts/eval_language_routing.py`.
+
+Clips shorter than 5 s, or where LID is not confident, go to Qwen3-ASR: it
+self-detects the language and can read any of them, whereas Parakeet cannot read
+non-European audio at all. (Whisper-tiny labels 2 s of Mandarin as English at
+0.63 confidence, so guessing English is not safe.)
 
 ```bash
-# Auto-detects language — Chinese, Japanese, Korean, German, French, and 25 more
+# Auto-detects language and routes to the best model
 any2md interview_zh.mp3 --diarize --identify
 
 # Override language explicitly (skips auto-detection)
 any2md lecture.mp4 --language zh
 
-# English-only fast path (Parakeet)
-any2md podcast.mp3 --language en
+# Force the fast European-language path (Parakeet v3, 25 languages)
+any2md podcast.mp3 --language de
+
+# Prefer the smaller multilingual model (half the memory, higher WER)
+any2md interview_ja.mp3 --model qwen3-asr-0.6b
 ```
 
 Supported languages: Chinese, Cantonese, English, German, Spanish, French, Italian, Portuguese, Russian, Korean, Japanese (and more via `--language` code). Pass `--language auto` (default) to let the model detect automatically.

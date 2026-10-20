@@ -1,5 +1,61 @@
 # WORKLOG
 
+## 2026-10-20 — ANY2-38: routing widened to Parakeet's 25 languages, LID hardening
+
+Follow-up to ANY2-31. Re-measured which model should handle which language,
+because the routing table only sent `en` to Parakeet even though v3 reads 25
+European languages.
+
+### Measurements (MLS for European = WER, FLEURS for the rest = CER, 6 clips each)
+
+| Model | es | fr | de | it | pt | nl | pl | ru | zh | ja | ko | ar | hi | s/clip | MLX peak |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| parakeet-v3 | 3.7 | 1.7 | 11.9 | 11.0 | 4.4 | 14.6 | 4.3 | 0.2 | — | — | — | — | — | 0.10 | 3.28 GB |
+| qwen3-asr-0.6b | 6.7 | 10.3 | 18.6 | 21.2 | 9.3 | 22.9 | 29.2 | 3.1 | 9.0 | 14.3 | 6.1 | 4.9 | 12.3 | 0.25 | 1.77 GB |
+| qwen3-asr-1.7b | 1.5 | 5.5 | 10.8 | 13.7 | 5.6 | 13.3 | 11.0 | 0.6 | 8.8 | 8.4 | 3.3 | 2.3 | 4.8 | 0.47 | 2.88 GB |
+
+Parakeet produced 120-200% CER on the CJK/Arabic/Hindi clips, which is the
+point: routing is load-bearing, and a misroute is total garbage, not a small
+WER hit.
+
+Decisions:
+- **Widen `PARAKEET_LANGS` to all 25 v3 languages.** Parakeet beat Qwen3-ASR-0.6B
+  on every European language and beat 1.7B on five of seven while running ~4x
+  faster. Russian is included (it is in v3's set).
+- **Do not make Qwen3-ASR-0.6B the default.** It lost to 1.7B on all 13
+  languages tested (ja 14.3 vs 8.4, hi 12.3 vs 4.8, pl 29.2 vs 11.0). It stays
+  available as `--model qwen3-asr-0.6b` for memory-constrained setups.
+
+### Bugs found while measuring
+
+- **Float WAVs silently disabled LID.** stdlib `wave` raises "unknown format: 3"
+  on IEEE-float WAVs (ffmpeg `-c:a pcm_f32le`, Audacity, many recorders).
+  `_audio_duration_s` swallowed that as `0.0`, which looked like a too-short
+  clip, so LID was skipped and the file was routed to the English/European
+  model. FLEURS ships float WAVs, which is how this surfaced: every clip came
+  back `("en", 0.0)`. Duration now falls back to `ffprobe`, and the LID window
+  slice to `ffmpeg` when `wave` cannot decode.
+- **Low confidence defaulted to English.** A 10 s Hindi clip scores `en` at
+  0.26; the old code returned `("en", 0.26)`, i.e. Parakeet, which cannot read
+  Hindi. Undecided now returns the `und` sentinel and routes to the multilingual
+  model with `language=None` (self-detect).
+- **Short clips (<5 s) skipped LID entirely** and went to the English model.
+  Keeping the 5 s floor is right (2 s of Mandarin scores `en` 0.63, 3 s of Hindi
+  `en` 0.25), but the fallback target was wrong: they now take the multilingual
+  path too.
+- The LID window temp file was never deleted; it is now cleaned up.
+
+Routing accuracy after the change: 39/39 clips across 13 languages picked a
+model that can read them. Verified through `_resolve_language_and_model`, not by
+inspection: `scripts/eval_language_routing.py` re-runs the whole matrix.
+
+### Reproduce
+
+```bash
+.venv/bin/python scripts/eval_language_routing.py --clips 6
+.venv/bin/python scripts/eval_language_routing.py --skip-fetch --only qwen3-asr-1.7b
+```
+
 ## 2026-10-17 — ANY2-37: native Rust port (Option C), phases 1-5
 
 Goal: a truly native `any2md-rs` on MLX via mlx-c/mlx-rs, with WER/DER parity gates.
